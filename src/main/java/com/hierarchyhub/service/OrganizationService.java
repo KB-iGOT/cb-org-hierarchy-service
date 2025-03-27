@@ -3,21 +3,17 @@ package com.hierarchyhub.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hierarchyhub.config.ApplicationConfiguration;
+import com.hierarchyhub.config.RedisCacheMgr;
 import com.hierarchyhub.dto.Constants;
-import com.hierarchyhub.dto.OrganizationRequest;
-import com.hierarchyhub.exception.InternalServerException;
-import com.hierarchyhub.exception.ResourceNotFoundException;
-import com.hierarchyhub.model.ApiResponse;
-import com.hierarchyhub.model.Organization;
-import com.hierarchyhub.model.OrganizationDTO;
+import com.hierarchyhub.dto.ApiResponse;
 import com.hierarchyhub.repository.OrganizationRepository;
+import org.neo4j.ogm.annotation.Transient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.util.CollectionUtils;
 
 import java.io.IOException;
 import java.text.DecimalFormat;
@@ -40,7 +36,7 @@ public class OrganizationService {
     ObjectMapper objectMapper;
 
     @Autowired
-    RedisTemplate redisTemplate;
+    RedisCacheMgr redisCacheMgr;
 
     public ApiResponse fetchHierarchy(String id) {
         ApiResponse response = new ApiResponse();
@@ -190,16 +186,24 @@ public class OrganizationService {
         ApiResponse response = new ApiResponse();
 
         try {
-            String redisKey = "org_hierarchy:" + objectMapper.writeValueAsString(searchCriteria);
+            String redisKey = objectMapper.writeValueAsString(searchCriteria);
 
-            if (Boolean.TRUE.equals(redisTemplate.hasKey(redisKey))) {
+            if (Boolean.TRUE.equals(redisCacheMgr.keyExists(redisKey))) {
                 log.info("Cache hit for key: {}", redisKey);
-                List<Map<String, Object>> cachedHierarchy = (List<Map<String, Object>>) redisTemplate.opsForValue().get(redisKey);
+                String cachedData = redisCacheMgr.getCache(redisKey);
 
-                response.setResponseCode(HttpStatus.OK);
-                response.getParams().setStatus(Constants.SUCCESS);
-                response.getResult().put(Constants.ORGANIZATIONS, cachedHierarchy);
-                return response;
+                if (cachedData != null) {
+                    List<Map<String, Object>> cachedHierarchy = objectMapper.readValue(
+                            cachedData, new TypeReference<List<Map<String, Object>>>() {
+                            }
+                    );
+
+                    response.setResponseCode(HttpStatus.OK);
+                    response.getParams().setStatus(Constants.SUCCESS);
+                    response.getResult().put(Constants.ORGANIZATIONS, cachedHierarchy);
+                    return response;
+                }
+
             }
 
             String searchTerm = (String) searchCriteria.get("orgName");
@@ -231,7 +235,7 @@ public class OrganizationService {
                         return parentId == null || !allMapIds.contains(parentId.toString());
                     })
                     .collect(Collectors.toList());
-            
+
             if (rootNodes.isEmpty()) {
                 log.warn("No root nodes found for search criteria: {}", searchCriteria);
                 response.setResponseCode(HttpStatus.NO_CONTENT);
@@ -244,7 +248,7 @@ public class OrganizationService {
             for (Map<String, Object> root : rootNodes) {
                 attachChildren(root, nodeMap);
             }
-            redisTemplate.opsForValue().set(redisKey, rootNodes, 1, TimeUnit.HOURS);
+            redisCacheMgr.putCache(redisKey, rootNodes, 3600);
             log.info("Stored hierarchy in Redis with key: {}", redisKey);
             response.setResponseCode(HttpStatus.OK);
             response.getParams().setStatus(Constants.SUCCESS);

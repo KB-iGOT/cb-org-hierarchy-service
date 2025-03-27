@@ -14,6 +14,7 @@ public class Constants {
     public static final String MESSAGE = "message";
     public static final String RESPONSE = "response";
     public static final String SUCCESS = "success";
+    public static final String REDIS_COMMON_KEY = "CB_ORG_";
 
 
     private Constants() {

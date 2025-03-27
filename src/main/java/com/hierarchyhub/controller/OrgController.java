@@ -1,20 +1,13 @@
 package com.hierarchyhub.controller;
 
-import com.hierarchyhub.dto.OrganizationRequest;
-import com.hierarchyhub.exception.InternalServerException;
-import com.hierarchyhub.model.ApiResponse;
-import com.hierarchyhub.model.Organization;
-import com.hierarchyhub.model.OrganizationDTO;
+import com.hierarchyhub.dto.ApiResponse;
 import com.hierarchyhub.repository.OrganizationRepository;
 import com.hierarchyhub.service.OrganizationService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/org/v1/hierarchy")

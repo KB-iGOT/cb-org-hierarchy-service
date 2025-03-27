@@ -1,4 +1,6 @@
-package com.hierarchyhub.model;
+package com.hierarchyhub.dto;
+
+import com.hierarchyhub.model.Organization;
 
 import java.util.List;
 

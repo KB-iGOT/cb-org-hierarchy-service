@@ -1,4 +1,4 @@
-package com.hierarchyhub.model;
+package com.hierarchyhub.dto;
 
 public class ApiRespParam {
 
