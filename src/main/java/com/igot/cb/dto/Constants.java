@@ -1,4 +1,4 @@
-package com.hierarchyhub.dto;
+package com.igot.cb.dto;
 
 public class Constants {
     public static final String CHILDREN = "children";

@@ -1,4 +1,4 @@
-package com.hierarchyhub.dto;
+package com.igot.cb.dto;
 
 import org.springframework.http.HttpStatus;
 

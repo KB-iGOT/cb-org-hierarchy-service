@@ -1,4 +1,4 @@
-package com.hierarchyhub.exception;
+package com.igot.cb.exception;
 
 public class InternalServerException extends RuntimeException {
 

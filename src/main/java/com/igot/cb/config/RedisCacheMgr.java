@@ -1,4 +1,4 @@
-package com.hierarchyhub.config;
+package com.igot.cb.config;
 
 
 import java.util.ArrayList;
@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.hierarchyhub.dto.Constants;
+import com.igot.cb.dto.Constants;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

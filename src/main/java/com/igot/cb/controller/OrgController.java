@@ -1,8 +1,7 @@
-package com.hierarchyhub.controller;
+package com.igot.cb.controller;
 
-import com.hierarchyhub.dto.ApiResponse;
-import com.hierarchyhub.repository.OrganizationRepository;
-import com.hierarchyhub.service.OrganizationService;
+import com.igot.cb.dto.ApiResponse;
+import com.igot.cb.service.OrganizationService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -16,9 +15,6 @@ public class OrgController {
 
     @Autowired
     private OrganizationService service;
-
-    @Autowired
-    OrganizationRepository repository;
 
     @GetMapping("/list/{id}")
     public ResponseEntity<?> fetchHierarchy(@PathVariable("id") String id) throws Exception {

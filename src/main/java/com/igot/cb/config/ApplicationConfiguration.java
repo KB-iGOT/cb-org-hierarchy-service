@@ -1,4 +1,4 @@
-package com.hierarchyhub.config;
+package com.igot.cb.config;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -21,17 +21,23 @@ public class ApplicationConfiguration {
     @Value("${redis.port}")
     private String redisPort;
 
-    @Value("${spring.neo4j.uri}")
+    @Value("${neo4j.uri}")
     private String neo4jUri;
 
-    @Value("${spring.neo4j.authentication.username}")
+    @Value("${neo4j.username}")
     private String neo4jUsername;
 
-    @Value("${spring.neo4j.authentication.password}")
+    @Value("${neo4j.password}")
     private String neo4jPassword;
 
     @Value("${redis.timeout}")
     private String redisTimeout;
+
+    @Value("${neo4j.auth.enable}")
+    private String neo4jAuthEnable;
+
+    @Value("${neo.timeout}")
+    private Long neoTimeout;
 
     public int getMaxLevel() {
         return maxLevel;
@@ -99,5 +105,13 @@ public class ApplicationConfiguration {
 
     public String getRedisTimeout() {
         return redisTimeout;
+    }
+
+    public String getNeo4jAuthEnable() {
+        return neo4jAuthEnable;
+    }
+
+    public Long getNeoTimeout() {
+        return neoTimeout;
     }
 }

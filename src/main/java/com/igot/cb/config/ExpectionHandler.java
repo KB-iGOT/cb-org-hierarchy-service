@@ -1,7 +1,7 @@
-package com.hierarchyhub.config;
+package com.igot.cb.config;
 
-import com.hierarchyhub.exception.InternalServerException;
-import com.hierarchyhub.exception.ResourceNotFoundException;
+import com.igot.cb.exception.InternalServerException;
+import com.igot.cb.exception.ResourceNotFoundException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ControllerAdvice;

@@ -1,17 +1,15 @@
-package com.hierarchyhub.service;
+package com.igot.cb.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.hierarchyhub.config.ApplicationConfiguration;
-import com.hierarchyhub.config.RedisCacheMgr;
-import com.hierarchyhub.dto.Constants;
-import com.hierarchyhub.dto.ApiResponse;
-import com.hierarchyhub.repository.OrganizationRepository;
-import org.neo4j.ogm.annotation.Transient;
+import com.igot.cb.config.ApplicationConfiguration;
+import com.igot.cb.config.RedisCacheMgr;
+import com.igot.cb.dto.Constants;
+import com.igot.cb.dto.ApiResponse;
+import org.neo4j.driver.v1.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
@@ -19,15 +17,12 @@ import java.io.IOException;
 import java.text.DecimalFormat;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.concurrent.TimeUnit;
+import java.util.stream.Stream;
 
 @Service
 public class OrganizationService {
 
     private Logger log = LoggerFactory.getLogger(getClass().getName());
-
-    @Autowired
-    private OrganizationRepository repository;
 
     @Autowired
     ApplicationConfiguration configuration;
@@ -38,28 +33,53 @@ public class OrganizationService {
     @Autowired
     RedisCacheMgr redisCacheMgr;
 
+    @Autowired
+    private Driver neo4jDriver;
+
+    @Autowired
+    private GraphService graphService;
+
+
     public ApiResponse fetchHierarchy(String id) {
         ApiResponse response = new ApiResponse();
-        String jsonResponse = repository.findHierarchyByOrgId(id, configuration.getMaxLevel());
 
-        try {
-            if (jsonResponse == null || jsonResponse.trim().isEmpty() || jsonResponse.equals("[]")) {
+        try(Session session = neo4jDriver.session(); Transaction transaction = session.beginTransaction()) {
+            List<Map<String, Object>> nodes = graphService.fetchHierarchy(id, configuration.getMaxLevel(), session, transaction);
+
+            if (nodes == null || nodes.isEmpty()) {
                 response.setResponseCode(HttpStatus.NO_CONTENT);
                 response.getParams().setStatus(Constants.FAILED);
                 response.getParams().setErrmsg("No hierarchy found for orgId: " + id);
-                log.warn("No hierarchy data available for orgId: {}", id);
                 return response;
             }
+            List<Map<String, Object>> parsedNodes = new ArrayList<>();
 
-            List<Map<String, Object>> nodes = objectMapper.readValue(jsonResponse, new TypeReference<List<Map<String, Object>>>() {});
+            for (Map<String, Object> node : nodes) {
+                Object hierarchyObj = node.get("hierarchy");
 
-            Map<String, Map<String, Object>> nodeMap = nodes.stream()
+                if (hierarchyObj instanceof String) {
+                    try {
+                        List<Map<String, Object>> hierarchyList = objectMapper.readValue(
+                                (String) hierarchyObj, new TypeReference<List<Map<String, Object>>>() {});
+                        parsedNodes.addAll(hierarchyList);
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                        response.setResponseCode(HttpStatus.INTERNAL_SERVER_ERROR);
+                        response.getParams().setStatus(Constants.FAILED);
+                        response.getParams().setErrmsg("Error parsing hierarchy JSON.");
+                        return response;
+                    }
+                }
+            }
+
+            Map<String, Map<String, Object>> nodeMap = parsedNodes.stream()
                     .collect(Collectors.toMap(
                             n -> {
                                 Map<String, Object> props = (Map<String, Object>) n.get("properties");
                                 return props != null ? (String) props.get("mapid") : null;
                             },
-                            n -> n
+                            n -> n,
+                            (existing, replacement) -> existing
                     ));
 
             Map<String, Object> root = nodeMap.values().stream()
@@ -74,28 +94,43 @@ public class OrganizationService {
                 response.setResponseCode(HttpStatus.NO_CONTENT);
                 response.getParams().setStatus(Constants.FAILED);
                 response.getParams().setErrmsg("No root node found for orgId: " + id);
-                log.warn("No root node found for orgId: {}", id);
                 return response;
             }
 
+            // Attach children recursively
             attachChildren(root, nodeMap);
+
+            transaction.success();
 
             response.setResponseCode(HttpStatus.OK);
             response.getResult().put(Constants.RESPONSE, Constants.SUCCESS);
             response.getParams().setStatus(Constants.SUCCESS);
             response.setResult(root);
 
-        } catch (IOException e) {
-            log.error("Failed to parse json. Exception: ", e);
-            response.setResponseCode(HttpStatus.INTERNAL_SERVER_ERROR);
-            response.getParams().setStatus(Constants.FAILED);
-            response.getParams().setErr(e.getMessage());
         } catch (Exception e) {
-            log.error("An unexpected error occurred. Exception: ", e);
+            e.printStackTrace();
             response.setResponseCode(HttpStatus.INTERNAL_SERVER_ERROR);
             response.getParams().setStatus(Constants.FAILED);
-            response.getParams().setErr(e.getMessage());
+            response.getParams().setErrmsg(e.getMessage());
         }
+
+        return response;
+    }
+
+
+    private ApiResponse buildNoContentResponse(String message) {
+        ApiResponse response = new ApiResponse();
+        response.setResponseCode(HttpStatus.NO_CONTENT);
+        response.getParams().setStatus(Constants.FAILED);
+        response.getParams().setErrmsg(message);
+        return response;
+    }
+
+    private ApiResponse buildErrorResponse(String message, Exception e) {
+        ApiResponse response = new ApiResponse();
+        response.setResponseCode(HttpStatus.INTERNAL_SERVER_ERROR);
+        response.getParams().setStatus(Constants.FAILED);
+        response.getParams().setErrmsg(message + ": " + e.getMessage());
         return response;
     }
 
@@ -195,89 +230,87 @@ public class OrganizationService {
                 if (cachedData != null) {
                     List<Map<String, Object>> cachedHierarchy = objectMapper.readValue(
                             cachedData, new TypeReference<List<Map<String, Object>>>() {
-                            }
-                    );
-
+                            });
                     response.setResponseCode(HttpStatus.OK);
                     response.getParams().setStatus(Constants.SUCCESS);
+                    response.getResult().put(Constants.RESPONSE, Constants.SUCCESS);
                     response.getResult().put(Constants.ORGANIZATIONS, cachedHierarchy);
                     return response;
                 }
-
             }
 
-            String searchTerm = (String) searchCriteria.get("orgName");
-            log.info("Cache miss for key: {}. Querying Neo4j...", redisKey);
-            String jsonResponse = repository.findOrganizationHierarchy(searchTerm, configuration.getMaxLevel());
+            try(Session session = neo4jDriver.session(); Transaction transaction = session.beginTransaction()) {
+                String searchTerm = (String) searchCriteria.get("orgName");
+                log.info("Cache miss for key: {}. Querying Neo4j...", redisKey);
 
-            if (jsonResponse == null || jsonResponse.trim().isEmpty() || jsonResponse.equals("[]")) {
-                log.warn("No organization hierarchy found for search criteria: {}", searchCriteria);
-                response.setResponseCode(HttpStatus.NO_CONTENT);
-                response.getParams().setStatus(Constants.FAILED);
-                response.getParams().setErrmsg("No organizations found for given search criteria");
-                response.getResult().put(Constants.ORGANIZATIONS, Collections.emptyList());
+                List<Map<String, Object>> nodes = new ArrayList<>();
+                nodes = graphService.searchOrganizations(searchTerm, configuration.getMaxLevel(), session, transaction);
+
+
+                if (nodes.isEmpty()) {
+                    return buildNoContentResponse("No organizations found for given search criteria");
+                }
+                List<Map<String, Object>> parsedNodes = new ArrayList<>();
+                for (Map<String, Object> node : nodes) {
+                    if (node.containsKey("hierarchy")) {
+                        String jsonString = (String) node.get("hierarchy");
+                        List<Map<String, Object>> parsedHierarchy = objectMapper.readValue(
+                                jsonString, new TypeReference<List<Map<String, Object>>>() {});
+                        parsedNodes.addAll(parsedHierarchy);
+                    }
+                }
+
+                Map<String, Map<String, Object>> nodeMap = parsedNodes.stream()
+                        .filter(n -> ((Map<String, Object>) n.get("properties")).get("mapid") != null)
+                        .collect(Collectors.toMap(
+                                n -> (String) ((Map<String, Object>) n.get("properties")).get("mapid"),
+                                n -> n));
+
+
+                Set<String> allMapIds = nodeMap.keySet();
+                List<Map<String, Object>> rootNodes = parsedNodes.stream()
+                        .filter(n -> {
+                            Object parentId = ((Map<String, Object>) n.get("properties")).get("parentmapid");
+                            return parentId == null || !allMapIds.contains(parentId.toString());
+                        })
+                        .collect(Collectors.toList());
+
+                if (rootNodes.isEmpty()) {
+                    return buildNoContentResponse("No root nodes found for given search criteria");
+                }
+
+                for (Map<String, Object> root : rootNodes) {
+                    attachChildren(root, nodeMap);
+                }
+
+                redisCacheMgr.putCache(redisKey, rootNodes, 3600);
+                log.info("Stored hierarchy in Redis with key: {}", redisKey);
+                transaction.success();
+                response.setResponseCode(HttpStatus.OK);
+                response.getParams().setStatus(Constants.SUCCESS);
+                response.getResult().put(Constants.RESPONSE, Constants.SUCCESS);
+                response.getResult().put(Constants.ORGANIZATIONS, rootNodes);
                 return response;
             }
-
-            List<Map<String, Object>> nodes = objectMapper.readValue(jsonResponse, new TypeReference<List<Map<String, Object>>>() {});
-
-            Map<String, Map<String, Object>> nodeMap = nodes.stream()
-                    .filter(n -> ((Map<String, Object>) n.get("properties")).get("mapid") != null)
-                    .collect(Collectors.toMap(n -> (String) ((Map<String, Object>) n.get("properties")).get("mapid"), n -> n));
-
-            Set<String> allMapIds = nodes.stream()
-                    .map(n -> (String) ((Map<String, Object>) n.get("properties")).get("mapid"))
-                    .collect(Collectors.toSet());
-
-            List<Map<String, Object>> rootNodes = nodes.stream()
-                    .filter(n -> {
-                        Object parentId = ((Map<String, Object>) n.get("properties")).get("parentmapid");
-                        return parentId == null || !allMapIds.contains(parentId.toString());
-                    })
-                    .collect(Collectors.toList());
-
-            if (rootNodes.isEmpty()) {
-                log.warn("No root nodes found for search criteria: {}", searchCriteria);
-                response.setResponseCode(HttpStatus.NO_CONTENT);
-                response.getParams().setStatus(Constants.FAILED);
-                response.getParams().setErrmsg("No root nodes found for given search criteria");
-                response.getResult().put(Constants.ORGANIZATIONS, Collections.emptyList());
-                return response;
-            }
-
-            for (Map<String, Object> root : rootNodes) {
-                attachChildren(root, nodeMap);
-            }
-            redisCacheMgr.putCache(redisKey, rootNodes, 3600);
-            log.info("Stored hierarchy in Redis with key: {}", redisKey);
-            response.setResponseCode(HttpStatus.OK);
-            response.getParams().setStatus(Constants.SUCCESS);
-            response.getResult().put(Constants.ORGANIZATIONS, rootNodes);
-
         } catch (Exception e) {
             log.error("Error processing search request: {}. Exception: {}", searchCriteria, e.getMessage(), e);
-            response.setResponseCode(HttpStatus.INTERNAL_SERVER_ERROR);
-            response.getParams().setStatus(Constants.FAILED);
-            response.getParams().setErrmsg("Unexpected error while processing hierarchy search");
+            return buildErrorResponse("Unexpected error while processing hierarchy search", e);
         }
-
-        return response;
     }
+
 
     public ApiResponse getLevel1Organizations() {
         ApiResponse response = new ApiResponse();
 
-        try {
-            List<Map<String, Object>> organizations = repository.getLevel1OrganizationsWithChildrenCount();
+        try(Session session = neo4jDriver.session(); Transaction transaction = session.beginTransaction()) {
+            List<Map<String, Object>> organizations = graphService.fetchLevel1Organizations(session, transaction);
 
-            if (organizations == null || organizations.isEmpty()) {
+            if (organizations.isEmpty()) {
                 log.warn("No Level 1 organizations found");
-                response.setResponseCode(HttpStatus.NO_CONTENT);
-                response.getParams().setStatus(Constants.FAILED);
-                response.getParams().setErrmsg("No Level 1 organizations found");
-                response.getResult().put(Constants.ORGANIZATIONS, Collections.emptyList());
-                return response;
+                return buildNoContentResponse("No Level 1 organizations found");
             }
+
+            log.info("Fetched {} Level 1 organizations", organizations.size());
 
             List<Map<String, Object>> flattenedOrganizations = new ArrayList<>();
             for (Map<String, Object> entry : organizations) {
@@ -285,17 +318,17 @@ public class OrganizationService {
                 orgData.put("childCount", entry.get("childCount"));
                 flattenedOrganizations.add(orgData);
             }
+            transaction.success();
             response.setResponseCode(HttpStatus.OK);
             response.getParams().setStatus(Constants.SUCCESS);
+            response.getResult().put(Constants.RESPONSE, Constants.SUCCESS);
             response.getResult().put(Constants.ORGANIZATIONS, flattenedOrganizations);
+            return response;
 
         } catch (Exception e) {
             log.error("Error fetching Level 1 organizations: {}", e.getMessage(), e);
-            response.setResponseCode(HttpStatus.INTERNAL_SERVER_ERROR);
-            response.getParams().setStatus(Constants.FAILED);
-            response.getParams().setErrmsg("An unexpected error occurred while fetching Level 1 organizations");
+            return buildErrorResponse("An unexpected error occurred while fetching Level 1 organizations", e);
         }
-
-        return response;
     }
+
 }
