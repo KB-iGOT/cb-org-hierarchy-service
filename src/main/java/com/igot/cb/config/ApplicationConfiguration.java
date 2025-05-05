@@ -21,23 +21,16 @@ public class ApplicationConfiguration {
     @Value("${redis.port}")
     private String redisPort;
 
-    @Value("${neo4j.uri}")
-    private String neo4jUri;
+    public String getRedisTimeout() {
+        return redisTimeout;
+    }
 
-    @Value("${neo4j.username}")
-    private String neo4jUsername;
-
-    @Value("${neo4j.password}")
-    private String neo4jPassword;
+    public void setRedisTimeout(String redisTimeout) {
+        this.redisTimeout = redisTimeout;
+    }
 
     @Value("${redis.timeout}")
     private String redisTimeout;
-
-    @Value("${neo4j.auth.enable}")
-    private String neo4jAuthEnable;
-
-    @Value("${neo.timeout}")
-    private Long neoTimeout;
 
     public int getMaxLevel() {
         return maxLevel;
@@ -77,41 +70,5 @@ public class ApplicationConfiguration {
 
     public void setRedisPort(String redisPort) {
         this.redisPort = redisPort;
-    }
-
-    public String getNeo4jUri() {
-        return neo4jUri;
-    }
-
-    public void setNeo4jUri(String neo4jUri) {
-        this.neo4jUri = neo4jUri;
-    }
-
-    public String getNeo4jUsername() {
-        return neo4jUsername;
-    }
-
-    public void setNeo4jUsername(String neo4jUsername) {
-        this.neo4jUsername = neo4jUsername;
-    }
-
-    public String getNeo4jPassword() {
-        return neo4jPassword;
-    }
-
-    public void setNeo4jPassword(String neo4jPassword) {
-        this.neo4jPassword = neo4jPassword;
-    }
-
-    public String getRedisTimeout() {
-        return redisTimeout;
-    }
-
-    public String getNeo4jAuthEnable() {
-        return neo4jAuthEnable;
-    }
-
-    public Long getNeoTimeout() {
-        return neoTimeout;
     }
 }

@@ -9,38 +9,62 @@ import org.neo4j.driver.v1.exceptions.AuthenticationException;
 import org.neo4j.driver.v1.exceptions.ServiceUnavailableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import javax.annotation.PreDestroy;
 import java.util.concurrent.TimeUnit;
 
 @Configuration
 public class Neo4jConfig {
 
-
-    @Autowired ApplicationConfiguration configuration;
-
-    private Logger logger = LoggerFactory.getLogger(Neo4jConfig.class);
+    private static final Logger logger = LoggerFactory.getLogger(Neo4jConfig.class);
+    private final PropertiesCache propertiesCache = PropertiesCache.getInstance();
+    private Driver driver;
 
     @Bean
-    public Driver Neo4jDriver() {
-
+    public Driver neo4jDriver() {
         try {
-            if (Boolean.parseBoolean(configuration.getNeo4jAuthEnable())) {
-                return GraphDatabase.driver(configuration.getNeo4jUri(),
-                        AuthTokens.basic(configuration.getNeo4jUsername(), configuration.getNeo4jPassword()));
+            String uri = propertiesCache.getProperty("neo4j.uri");
+            String username = propertiesCache.getProperty("neo4j.username");
+            String password = propertiesCache.getProperty("neo4j.password");
+            String authEnabledStr = propertiesCache.getProperty("neo4j.auth.enable");
+            String timeoutStr = propertiesCache.getProperty("neo.timeout");
+
+            logger.info("Neo4j URI: {}", uri);
+            logger.info("Auth Enabled: {}", authEnabledStr);
+            logger.info("Timeout: {}", timeoutStr);
+
+            boolean authEnabled = Boolean.parseBoolean(authEnabledStr);
+            int timeout = timeoutStr != null ? Integer.parseInt(timeoutStr) : 30;
+
+            if (authEnabled) {
+                driver = GraphDatabase.driver(uri, AuthTokens.basic(username, password));
+                logger.info("Neo4j driver initialized with authentication.");
             } else {
-                Config config = Config.build()
-                        .withConnectionTimeout(configuration.getNeoTimeout(), TimeUnit.SECONDS)
-                        .withConnectionLivenessCheckTimeout(10L, TimeUnit.SECONDS).toConfig();
-                logger.info("Using timeout config of : " + configuration.getNeoTimeout().toString());
-                return GraphDatabase.driver(configuration.getNeo4jUri(), config);
+                Config config = Config.builder()
+                        .withConnectionTimeout(timeout, TimeUnit.SECONDS)
+                        .withConnectionLivenessCheckTimeout(10, TimeUnit.SECONDS)
+                        .build();
+                driver = GraphDatabase.driver(uri, config);
+                logger.info("Neo4j driver initialized without authentication using timeout config.");
             }
+            return driver;
 
         } catch (AuthenticationException | ServiceUnavailableException e) {
+            logger.error("Neo4j connection error: ", e);
             throw new GraphException(e.code(), e.getMessage());
+        } catch (Exception e) {
+            logger.error("Unexpected error initializing Neo4j driver: ", e);
+            throw new RuntimeException("Unexpected error in Neo4j configuration", e);
         }
+    }
 
+    @PreDestroy
+    public void closeDriver() {
+        if (driver != null) {
+            logger.info("Closing Neo4j driver");
+            driver.close();
+        }
     }
 }
