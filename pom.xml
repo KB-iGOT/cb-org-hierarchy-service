@@ -8,7 +8,7 @@
 		<version>2.0.0.RELEASE</version>
 		<relativePath/>
 	</parent>
-	<groupId>com.HierarchyHub</groupId>
+	<groupId>com.igot.cb</groupId>
 	<artifactId>cb-org-hierarchy-service</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>cb-org-hierarchy-service</name>
