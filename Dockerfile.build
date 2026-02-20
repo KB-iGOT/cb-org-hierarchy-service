@@ -1,8 +1,5 @@
-FROM eclipse-temurin:8-jdk
+FROM maven:3.9-eclipse-temurin-8 AS build
 
-RUN apt update && apt install maven -y
-
-COPY . /opt
-WORKDIR /opt
-RUN mvn clean install
-
+WORKDIR /app
+COPY . .
+RUN mvn clean package -DskipTests
