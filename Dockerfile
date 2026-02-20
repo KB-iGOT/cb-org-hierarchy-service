@@ -22,4 +22,4 @@ COPY cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar /opt/
 RUN chown -R appuser:appuser /opt
 USER appuser
 
-CMD ["/bin/bash", "-c", "java -XX:+PrintFlagsFinal $JAVA_OPTIONS -XX:+UnlockExperimentalVMOptions -XX:+UseCGroupMemoryLimitForHeap -Xmx512m -jar "/opt/cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar"]
+CMD ["java", "-XX:+PrintFlagsFinal", "-XX:+UnlockExperimentalVMOptions", "-XX:+UseCGroupMemoryLimitForHeap", "-Xmx512m", "-jar", "/opt/cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar"]
