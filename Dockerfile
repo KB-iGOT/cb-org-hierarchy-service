@@ -18,10 +18,12 @@ RUN curl -L -o wkhtmltopdf.deb \
 
 RUN dpkg -i wkhtmltopdf.deb || apt-get -f install -y
 
-COPY cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar /opt/
+WORKDIR /opt
+
+# Copy jar from build stage
+COPY --from=build /app/target/*.jar app.jar
 
 RUN chown -R appuser:appuser /opt
 USER appuser
-WORKDIR /opt
 
-CMD ["java", "-XX:+UnlockExperimentalVMOptions", "-XX:+UseCGroupMemoryLimitForHeap", "-jar", "/opt/cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar"]
+CMD ["java", "-XX:+UnlockExperimentalVMOptions", "-XX:+UseCGroupMemoryLimitForHeap", "-jar", "/opt/app.jar"]
