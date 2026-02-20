@@ -1,4 +1,4 @@
-FROM eclipse-temurin:8-jdk-alpine
+FROM eclipse-temurin:8-jdk
 
 RUN useradd -ms /bin/bash appuser
 
@@ -24,4 +24,4 @@ RUN chown -R appuser:appuser /opt
 USER appuser
 WORKDIR /opt
 
-CMD ["java", "-XX:+PrintFlagsFinal", "-XX:+UnlockExperimentalVMOptions", "-XX:+UseCGroupMemoryLimitForHeap", "-jar", "/opt/cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar"]
+CMD ["java", "-XX:+UnlockExperimentalVMOptions", "-XX:+UseCGroupMemoryLimitForHeap", "-jar", "/opt/cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar"]
