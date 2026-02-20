@@ -1,4 +1,4 @@
-FROM eclipse-temurin:8-jdk-bullseye
+FROM eclipse-temurin:8-jdk-alpine
 
 RUN useradd -ms /bin/bash appuser
 
