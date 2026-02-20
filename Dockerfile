@@ -1,5 +1,4 @@
 FROM eclipse-temurin:8-jdk
-
 RUN useradd -ms /bin/bash appuser
 
 RUN apt-get update && apt-get install -y \
@@ -18,10 +17,7 @@ RUN curl -L -o wkhtmltopdf.deb \
 
 RUN dpkg -i wkhtmltopdf.deb || apt-get -f install -y
 
-WORKDIR /opt
-
-# Copy jar from build stage
-COPY --from=build /app/target/*.jar app.jar
+COPY cb-org-hierarchy-service-0.0.1-SNAPSHOT.jar /opt/
 
 RUN chown -R appuser:appuser /opt
 USER appuser
