@@ -1,181 +1,237 @@
 package com.hierarchyhub.service.impl;
 
 import com.hierarchyhub.dto.Constants;
-import com.hierarchyhub.config.OrgHierarchyProperties;
 import com.hierarchyhub.config.OrgHierarchyTransactionConfig;
 import com.hierarchyhub.dto.AssociationRef;
+import com.hierarchyhub.dto.BatchLinkExecutionResult;
 import com.hierarchyhub.dto.BatchOperationResponse;
 import com.hierarchyhub.dto.ChildOrgSummary;
 import com.hierarchyhub.dto.HierarchyResponse;
 import com.hierarchyhub.dto.LinkOrgRequest;
-import com.hierarchyhub.dto.OrgOperationResult;
+import com.hierarchyhub.dto.OrgLinkErrorDetail;
 import com.hierarchyhub.dto.MoveOrgRequest;
 import com.hierarchyhub.dto.MoveOrgResponse;
 import com.hierarchyhub.dto.OrgTreeNode;
 import com.hierarchyhub.dto.ReadChildrenRequest;
+import com.hierarchyhub.dto.ReadChildrenRequestBody;
 import com.hierarchyhub.dto.ReadChildrenResponse;
 import com.hierarchyhub.dto.UnlinkOrgRequest;
 import com.hierarchyhub.exception.ErrorCode;
 import com.hierarchyhub.exception.ServiceException;
 import com.hierarchyhub.model.ApiResponse;
 import com.hierarchyhub.model.OrganisationRecord;
-import com.hierarchyhub.model.OrgNode;
+import com.hierarchyhub.model.OrgHierarchyDto;
+import com.hierarchyhub.model.OrgHierarchyDtoWithDepth;
 import com.hierarchyhub.repository.OrgHierarchyRepository;
 import com.hierarchyhub.service.OrgHierarchyService;
-import com.hierarchyhub.util.AccessTokenValidator;
 import com.hierarchyhub.util.AppUtil;
+import com.hierarchyhub.util.AuthUtils;
+import com.hierarchyhub.util.CassandraUtils;
 import com.hierarchyhub.validation.OrgHierarchyValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.CollectionUtils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * All the business rules for link / move / unlink: auth, the ministry/state check, row locking, idempotency, cycle
- * prevention, and the child counters. Every write method is one PostgreSQL transaction - it locks the rows it touches
- * in sorted id order (so two writers on the same rows queue instead of deadlocking), re-checks the state it depends on
- * under that lock, and only then writes. Every method returns the finished {@link ApiResponse} envelope: building it
- * here, not in the controller, keeps the API id, version and result shape together with the logic that produces them.
- */
 @Service
 public class OrgHierarchyServiceImpl implements OrgHierarchyService {
 
     private static final Logger log = LoggerFactory.getLogger(OrgHierarchyServiceImpl.class);
 
-    private final OrgHierarchyRepository repository;
-    private final OrgHierarchyValidator validator;
-    private final AccessTokenValidator accessTokenValidator;
+    private final OrgHierarchyRepository orgHierarchyRepository;
+    private final OrgHierarchyValidator orgHierarchyValidator;
+    private final AuthUtils authUtils;
+    private final CassandraUtils cassandraUtils;
     private final int maxDepth;
 
-    public OrgHierarchyServiceImpl(OrgHierarchyRepository repository, OrgHierarchyValidator validator,
-                                    AccessTokenValidator accessTokenValidator, OrgHierarchyProperties props) {
-        this.repository = repository;
-        this.validator = validator;
-        this.accessTokenValidator = accessTokenValidator;
-        this.maxDepth = props.getMaxDepth();
+    public OrgHierarchyServiceImpl(OrgHierarchyRepository orgHierarchyRepository, OrgHierarchyValidator orgHierarchyValidator,
+                                    AuthUtils authUtils, CassandraUtils cassandraUtils,
+                                    @Value("${org-hierarchy.max-depth}") int maxDepth) {
+        this.orgHierarchyRepository = orgHierarchyRepository;
+        this.orgHierarchyValidator = orgHierarchyValidator;
+        this.authUtils = authUtils;
+        this.cassandraUtils = cassandraUtils;
+        this.maxDepth = maxDepth;
     }
 
     @Override
     @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
     public ApiResponse linkOrgToHierarchy(LinkOrgRequest request, String accessToken) {
-        String userId = fetchUserIdFromToken(accessToken);
-        String parentId = request.getRequest().getParentOrgId();
-        List<String> childIds = identifiersOf(request.getRequest().getAssociations());
-        log.info("linkOrgToHierarchy request: parentId={}, childIds={}", parentId, childIds);
+        String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
 
-        TreeSet<String> rowsToLock = sorted(childIds);
-        rowsToLock.add(parentId);
-        repository.lockRows(rowsToLock);
-        requireExisting(parentId, "Parent " + parentId + " is not in the hierarchy: map it first (parents are mapped top-down)");
+        String parentOrgId = request.getRequest().getParentOrgId();
+        List<String> childOrganisationIds = extractUniqueChildIdentifiers(request.getRequest().getAssociations());
+        log.info("Starting linkOrgToHierarchy: parentOrgId={}, requestedChildCount={}", parentOrgId, childOrganisationIds.size());
 
-        List<OrgOperationResult> results = new ArrayList<>();
-        for (String childId : childIds) {
-            results.add(attachChildUnderParent(parentId, childId, userId));
-        }
-        String message = summaryMessage("added", "to", Constants.MSG_ORG_ADDED_TO_HIERARCHY, results);
-        logOutcome("linkOrgToHierarchy", parentId, results);
-        return versionedResponse(Constants.API_LINK, new BatchOperationResponse(message));
-    }
+        BatchLinkExecutionResult executionResult = linkChildrenUnderParentBatch(parentOrgId, childOrganisationIds, userId);
 
-    /** Attaches one child under {@code parentId}; every rule violation is reported on its own result instead of failing the whole batch. */
-    private OrgOperationResult attachChildUnderParent(String parentId, String childId, String userId) {
-        try {
-            validator.requireDistinct(childId, parentId);
-            Map<String, OrganisationRecord> masters = validator.checkMinistryOrStateCompliance(childId, parentId);
-
-            Optional<OrgNode> existingChild = repository.findById(childId);
-            if (!existingChild.isPresent()) {
-                String childName = masters.containsKey(childId) ? nameOrId(masters.get(childId)) : childId;
-                Optional<OrgNode> created = repository.createMapped(childId, childName, parentId, userId);
-                if (created.isPresent()) {
-                    repository.incrementChildCount(parentId);
-                    log.debug("attachChildUnderParent: created and attached childId={} under parentId={}", childId, parentId);
-                    return OrgOperationResult.success(childId, Constants.MSG_ORG_ADDED_TO_HIERARCHY);
-                }
-                existingChild = repository.findById(childId); // another request created it first; fall through as an existing org
-            }
-
-            OrgNode child = existingChild.orElseThrow(() -> notFound(childId));
-            if (parentId.equals(child.parentId())) {
-                log.debug("attachChildUnderParent: childId={} already under parentId={}, no-op", childId, parentId);
-                return OrgOperationResult.success(childId, Constants.MSG_ORG_ADDED_TO_HIERARCHY); // idempotent no-op
-            }
-            if (child.parentId() != null) {
-                throw new ServiceException(ErrorCode.ALREADY_HAS_PARENT,
-                        "Org " + childId + " is already under " + child.parentId() + "; use /move");
-            }
-            if (child.isL0()) {
-                throw new ServiceException(ErrorCode.IS_AN_L0,
-                        "Org " + childId + " is a ministry or state: it cannot be attached under another org");
-            }
-            requireNoCycle(childId, parentId);
-
-            repository.setParent(childId, parentId, userId);
-            repository.incrementChildCount(parentId);
-            log.debug("attachChildUnderParent: attached existing childId={} under parentId={}", childId, parentId);
-            return OrgOperationResult.success(childId, Constants.MSG_ORG_ADDED_TO_HIERARCHY);
-        } catch (ServiceException e) {
-            log.warn("attachChildUnderParent failed: childId={}, parentId={}, reason={}", childId, parentId, e.getMessage());
-            return OrgOperationResult.failure(childId, e.getMessage());
-        }
+        return buildLinkApiResponse(childOrganisationIds.size(),
+                executionResult.getSucceededChildOrganisationIds().size(), executionResult.getFailureErrors());
     }
 
     @Override
     @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
-    public OrgOperationResult attachChild(String parentId, String childId, String userId) {
-        repository.lockRows(sorted(childId, parentId));
-        if (!repository.findById(parentId).isPresent()) {
-            return OrgOperationResult.failure(childId,
-                    "Parent " + parentId + " is not in the hierarchy: map it first (parents are mapped top-down)");
+    public BatchLinkExecutionResult linkChildrenUnderParentBatch(String parentOrgId, List<String> childOrganisationIds, String userId) {
+        if (CollectionUtils.isEmpty(childOrganisationIds)) {
+            return new BatchLinkExecutionResult(Collections.emptyList(), Collections.emptyList());
         }
-        return attachChildUnderParent(parentId, childId, userId);
+
+        TreeSet<String> rowsToLock = sorted(childOrganisationIds);
+        rowsToLock.add(parentOrgId);
+        orgHierarchyRepository.lockRows(rowsToLock);
+
+        OrganisationRecord parentOrganisationRecord = validateParentAndCreateHierarchyIfNeeded(parentOrgId, userId);
+
+        Map<String, OrganisationRecord> childOrganisationRecords = cassandraUtils.fetchBatchOrganisationsFromTable(childOrganisationIds);
+        Map<String, OrgHierarchyDto> existingHierarchyNodes = orgHierarchyRepository.findExisting(childOrganisationIds);
+        Set<String> parentAncestorChain = new HashSet<>(orgHierarchyRepository.chainUp(parentOrgId));
+
+        int capacity = childOrganisationIds.size();
+        List<String> newChildIdsToInsert = new ArrayList<>(capacity);
+        List<String> newChildNamesToInsert = new ArrayList<>(capacity);
+        List<String> existingChildIdsToUpdate = new ArrayList<>(capacity);
+        List<String> succeededChildOrganisationIds = new ArrayList<>(capacity);
+        List<OrgLinkErrorDetail> failureErrors = new ArrayList<>();
+
+        for (String childId : childOrganisationIds) {
+            orgHierarchyValidator.validateAndCategorizeChild(childId, parentOrgId, parentOrganisationRecord,
+                    childOrganisationRecords.get(childId), existingHierarchyNodes.get(childId), parentAncestorChain,
+                    newChildIdsToInsert, newChildNamesToInsert, existingChildIdsToUpdate, succeededChildOrganisationIds, failureErrors);
+        }
+
+        // Persist database updates in batch - at most one insert batch, one update batch, one counter update.
+        persistBatchChildLinks(parentOrgId, userId, newChildIdsToInsert, newChildNamesToInsert, existingChildIdsToUpdate);
+
+        logBatchLinkSuccessSummary(parentOrgId, succeededChildOrganisationIds, failureErrors.size());
+
+        return new BatchLinkExecutionResult(succeededChildOrganisationIds, failureErrors);
+    }
+
+    private OrganisationRecord validateParentAndCreateHierarchyIfNeeded(String parentId, String userId) {
+        OrganisationRecord parentRecord = cassandraUtils.fetchBatchOrganisationsFromTable(Collections.singletonList(parentId)).get(parentId);
+        orgHierarchyValidator.requireActiveParentOrganisation(parentId, parentRecord);
+        if (!orgHierarchyRepository.findById(parentId).isPresent()) {
+            orgHierarchyValidator.requireMinistryOrStateRoot(parentId, parentRecord);
+            orgHierarchyRepository.createRoot(parentId, nameOrId(parentRecord), userId);
+        }
+        return parentRecord;
+    }
+
+    private void persistBatchChildLinks(String parentId, String userId,
+                                         List<String> newChildIdsToInsert, List<String> newChildNamesToInsert,
+                                         List<String> existingChildIdsToUpdate) {
+        if (!CollectionUtils.isEmpty(newChildIdsToInsert)) {
+            orgHierarchyRepository.batchInsertMapped(newChildIdsToInsert, newChildNamesToInsert, parentId, userId);
+        }
+        if (!CollectionUtils.isEmpty(existingChildIdsToUpdate)) {
+            orgHierarchyRepository.batchSetParent(existingChildIdsToUpdate, parentId, userId);
+        }
+        int totalNewlyAttached = newChildIdsToInsert.size() + existingChildIdsToUpdate.size();
+        if (totalNewlyAttached > 0) {
+            orgHierarchyRepository.incrementChildCountBy(parentId, totalNewlyAttached);
+        }
+    }
+
+    private void logBatchLinkSuccessSummary(String parentId, List<String> succeededChildIds, int failedCount) {
+        log.info("Batch link completed: parentId={}, attachedChildCount={}, succeededChildIds={}, failedCount={}",
+                parentId, succeededChildIds.size(), succeededChildIds, failedCount);
+    }
+
+    private ApiResponse buildLinkApiResponse(int totalCount, int successCount, List<OrgLinkErrorDetail> failureErrors) {
+        if (totalCount == 1 && !CollectionUtils.isEmpty(failureErrors)) {
+            OrgLinkErrorDetail failure = failureErrors.get(0);
+            return ApiResponse.failure(Constants.API_LINK, HttpStatus.BAD_REQUEST, failure.getErr(), failure.getErrmsg());
+        }
+        if (successCount == 0 && !CollectionUtils.isEmpty(failureErrors)) {
+            ApiResponse response = ApiResponse.failure(Constants.API_LINK, HttpStatus.BAD_REQUEST,
+                    ErrorCode.INVALID_REQUEST.name(), Constants.MSG_ALL_ORGS_FAILED_TO_LINK);
+            populateLinkResultDetails(response, Constants.MSG_ALL_ORGS_FAILED_TO_LINK, totalCount, 0, failureErrors.size(), failureErrors);
+            return response;
+        }
+        if (!CollectionUtils.isEmpty(failureErrors)) {
+            ApiResponse response = versionedResponse(Constants.API_LINK, null);
+            response.getParams().setStatus(Constants.STATUS_PARTIAL_SUCCESS);
+            response.getParams().setErrmsg(String.format(Constants.MSG_FAILED_TO_LINK_N_OF_TOTAL, failureErrors.size(), totalCount));
+            populateLinkResultDetails(response, Constants.MSG_ORG_PARTIALLY_ADDED, totalCount, successCount, failureErrors.size(), failureErrors);
+            return response;
+        }
+        ApiResponse response = versionedResponse(Constants.API_LINK, null);
+        populateLinkResultDetails(response, Constants.MSG_ORG_ADDED_TO_HIERARCHY, totalCount, successCount, 0, null);
+        return response;
+    }
+
+    private void populateLinkResultDetails(ApiResponse response, String message, int totalCount, int successCount,
+                                            int failedCount, List<OrgLinkErrorDetail> failureErrors) {
+        response.put(Constants.MESSAGE, message);
+        response.put(Constants.KEY_TOTAL_COUNT, totalCount);
+        response.put(Constants.KEY_SUCCESS_COUNT, successCount);
+        response.put(Constants.KEY_FAILED_COUNT, failedCount);
+        if (!CollectionUtils.isEmpty(failureErrors)) {
+            response.put(Constants.KEY_ERRORS, failureErrors);
+        }
+    }
+
+    /** Dedupes while preserving order: a duplicate childOrgId would otherwise be validated/attached twice and double-count. */
+    private static List<String> extractUniqueChildIdentifiers(List<AssociationRef> associations) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        for (AssociationRef ref : associations) {
+            ids.add(ref.getChildOrgId());
+        }
+        return new ArrayList<>(ids);
     }
 
     @Override
     @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
     public ApiResponse moveOrgInHierarchy(MoveOrgRequest request, String accessToken) {
-        String userId = fetchUserIdFromToken(accessToken);
+        String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
         String orgId = request.getRequest().getOrgId();
         String newParentId = request.getRequest().getNewParentOrgId();
-        log.info("moveOrgInHierarchy request: orgId={}, newParentId={}", orgId, newParentId);
+        log.info("Starting moveOrgInHierarchy: orgId={}, newParentId={}", orgId, newParentId);
 
-        validator.requireDistinct(orgId, newParentId);
-        validator.checkMinistryOrStateCompliance(orgId, newParentId);
+        orgHierarchyValidator.validateDistinctEntities(orgId, newParentId);
+        Map<String, OrganisationRecord> moveOrganisationRecords = cassandraUtils.fetchBatchOrganisationsFromTable(Arrays.asList(orgId, newParentId));
+        orgHierarchyValidator.validateMoveEligibilityInTable(orgId, newParentId, moveOrganisationRecords.get(orgId), moveOrganisationRecords.get(newParentId));
 
-        OrgNode before = repository.findById(orgId).orElseThrow(() -> notFound(orgId));
-        if (before.isL0()) {
-            throw new ServiceException(ErrorCode.IS_AN_L0, "Org " + orgId + " is a ministry or state: it cannot be moved");
-        }
-        if (before.parentId() == null) {
+        OrgHierarchyDto existingOrgHierarchyDto = orgHierarchyRepository.findById(orgId).orElseThrow(() -> notFound(orgId));
+        if (!orgHierarchyValidator.hasParent(existingOrgHierarchyDto)) {
             throw new ServiceException(ErrorCode.NOT_LINKED, "Org " + orgId + " is unlinked: use /link, not /move");
         }
+        String oldParentIdBeforeLock = existingOrgHierarchyDto.parentId();
 
-        repository.lockRows(sorted(orgId, before.parentId(), newParentId));
-        OrgNode org = requireUnchangedParent(orgId, before.parentId());
-        requireExisting(newParentId, "Parent " + newParentId + " is not in the hierarchy");
+        orgHierarchyRepository.lockRows(sorted(orgId, oldParentIdBeforeLock, newParentId));
 
-        if (newParentId.equals(org.parentId())) {
-            log.info("moveOrgInHierarchy done: orgId={} already under newParentId={}, no-op", orgId, newParentId);
-            MoveOrgResponse noOp = new MoveOrgResponse(orgId, org.parentId(), newParentId, false,
-                    "Organisation is already linked under this parent"); // idempotent no-op, genuinely distinct from a move
+        OrgHierarchyDto lockedOrgHierarchyDto = requireUnchangedParent(orgId, oldParentIdBeforeLock);
+        orgHierarchyValidator.requireExisting(orgHierarchyRepository.findById(newParentId).isPresent(),
+                String.format(Constants.ERR_NEW_PARENT_NOT_IN_HIERARCHY, newParentId));
+
+        if (orgHierarchyValidator.isAlreadyLinkedTo(lockedOrgHierarchyDto, newParentId)) {
+            log.info("moveOrgInHierarchy idempotent no-op: orgId={} is already under newParentId={}", orgId, newParentId);
+            MoveOrgResponse noOp = new MoveOrgResponse(orgId, lockedOrgHierarchyDto.parentId(), newParentId, false,
+                    Constants.MSG_ALREADY_LINKED_UNDER_PARENT); // idempotent no-op, genuinely distinct from a move
             return versionedResponse(Constants.API_MOVE, noOp);
         }
-        requireNoCycle(orgId, newParentId);
+        orgHierarchyValidator.validateCyclePrevention(orgId, newParentId, orgHierarchyRepository.chainUp(newParentId));
 
-        String oldParentId = org.parentId();
-        repository.setParent(orgId, newParentId, userId);
-        repository.decrementChildCount(oldParentId);
-        repository.incrementChildCount(newParentId);
-        log.info("moveOrgInHierarchy done: orgId={}, oldParentId={}, newParentId={}", orgId, oldParentId, newParentId);
+        String oldParentId = lockedOrgHierarchyDto.parentId();
+        orgHierarchyRepository.setParent(orgId, newParentId, userId);
+        orgHierarchyRepository.decrementChildCount(oldParentId);
+        orgHierarchyRepository.incrementChildCount(newParentId);
+        log.info("moveOrgInHierarchy completed: orgId={}, oldParentId={}, newParentId={}", orgId, oldParentId, newParentId);
         MoveOrgResponse moved = new MoveOrgResponse(orgId, oldParentId, newParentId, true, Constants.MSG_ORG_MOVED_IN_HIERARCHY);
         return versionedResponse(Constants.API_MOVE, moved);
     }
@@ -183,52 +239,62 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
     @Override
     @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
     public ApiResponse unlinkOrgFromHierarchy(UnlinkOrgRequest request, String accessToken) {
-        String userId = fetchUserIdFromToken(accessToken);
+        String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
         String orgId = request.getRequest().getOrgId();
-        boolean requireLeaf = request.getRequest().requireLeafOrDefault();
-        log.info("unlinkOrgFromHierarchy request: orgId={}, requireLeaf={}", orgId, requireLeaf);
 
-        OrgNode before = repository.findById(orgId).orElseThrow(() -> notFound(orgId));
-        if (before.parentId() == null) {
+        // safe default: unlink just orgId (leaf-only) unless the caller explicitly opts into the whole subtree
+        Boolean requestedRequireLeaf = request.getRequest().getRequireLeaf();
+        boolean requireLeaf = requestedRequireLeaf == null || requestedRequireLeaf;
+        log.info("Starting unlinkOrgFromHierarchy: orgId={}, requireLeaf={}", orgId, requireLeaf);
+
+        OrgHierarchyDto existingOrgHierarchyDto = orgHierarchyRepository.findById(orgId).orElseThrow(() -> notFound(orgId));
+        if (!orgHierarchyValidator.hasParent(existingOrgHierarchyDto)) {
             throw new ServiceException(ErrorCode.NOT_LINKED, "Org " + orgId + " has no parent");
         }
+        String parentIdBeforeLock = existingOrgHierarchyDto.parentId();
 
         if (requireLeaf) {
-            repository.lockRows(sorted(orgId, before.parentId()));
-            OrgNode org = requireUnchangedParent(orgId, before.parentId());
-            if (repository.hasChildren(orgId)) {
-                throw new ServiceException(ErrorCode.NOT_A_LEAF,
-                        "Org " + orgId + " has children; pass requireLeaf=false to unlink it with its subtree");
-            }
-            repository.unlinkRow(orgId, userId);
-            repository.decrementChildCount(org.parentId());
-            log.info("unlinkOrgFromHierarchy done: orgId={}, parentId={}", orgId, org.parentId());
+            unlinkSingleLeafOrganisation(orgId, parentIdBeforeLock, userId);
         } else {
-            // the default: orgId and every descendant are unlinked together - the whole branch, not just orgId itself
-            List<OrgNode> subtree = repository.findSubtree(orgId); // unlocked read; re-verified below once locked
-            TreeSet<String> subtreeIds = new TreeSet<>();
-            for (OrgNode node : subtree) {
-                subtreeIds.add(node.id());
-            }
-            TreeSet<String> rowsToLock = sorted(subtreeIds);
-            rowsToLock.add(before.parentId());
-            repository.lockRows(rowsToLock);
-            OrgNode org = requireUnchangedParent(orgId, before.parentId());
-            repository.clearSubtree(subtreeIds, userId); // orgId's own original parent is NOT in subtreeIds, so it's untouched here
-            repository.decrementChildCount(org.parentId());
-            log.info("unlinkOrgFromHierarchy done: orgId={}, parentId={}, subtreeSize={}", orgId, org.parentId(), subtree.size());
+            unlinkEntireSubtreeBranch(orgId, parentIdBeforeLock, userId);
         }
+
         return versionedResponse(Constants.API_UNLINK, new BatchOperationResponse(Constants.MSG_ORG_REMOVED_FROM_HIERARCHY));
+    }
+
+    private void unlinkSingleLeafOrganisation(String orgId, String parentIdBeforeLock, String userId) {
+        orgHierarchyRepository.lockRows(sorted(orgId, parentIdBeforeLock));
+        OrgHierarchyDto lockedOrgHierarchyDto = requireUnchangedParent(orgId, parentIdBeforeLock);
+
+        orgHierarchyValidator.requireNoActiveChildren(orgId, orgHierarchyRepository.hasChildren(orgId));
+
+        orgHierarchyRepository.unlinkRow(orgId, userId);
+        orgHierarchyRepository.decrementChildCount(lockedOrgHierarchyDto.parentId());
+        log.info("unlinkSingleLeafOrganisation completed: orgId={}, parentId={}", orgId, lockedOrgHierarchyDto.parentId());
+    }
+
+    private void unlinkEntireSubtreeBranch(String orgId, String parentIdBeforeLock, String userId) {
+        List<String> descendantSubtreeOrgIds = orgHierarchyRepository.findDescendantSubtreeOrgIds(orgId); // unlocked read; re-verified below once locked
+
+        TreeSet<String> rowsToLock = sorted(descendantSubtreeOrgIds);
+        rowsToLock.add(parentIdBeforeLock);
+        orgHierarchyRepository.lockRows(rowsToLock);
+        OrgHierarchyDto lockedOrgHierarchyDto = requireUnchangedParent(orgId, parentIdBeforeLock);
+
+        orgHierarchyRepository.clearSubtree(descendantSubtreeOrgIds, userId);
+        orgHierarchyRepository.decrementChildCount(lockedOrgHierarchyDto.parentId());
+        log.info("unlinkEntireSubtreeBranch completed: orgId={}, parentId={}, unlinkedSubtreeOrgCount={}",
+                orgId, lockedOrgHierarchyDto.parentId(), descendantSubtreeOrgIds.size());
     }
 
     @Override
     @Transactional(value = OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER, readOnly = true)
     public ApiResponse readOrgChildren(String orgId, ReadChildrenRequest request, String accessToken) {
-        fetchUserIdFromToken(accessToken);
-        OrgNode root = repository.findById(orgId)
+        authUtils.validateCallerAuthenticationAndFetchUserId(accessToken);
+        OrgHierarchyDto root = orgHierarchyRepository.findById(orgId)
                 .orElseThrow(() -> new ServiceException(ErrorCode.ORG_NOT_FOUND, "Org " + orgId + " is not in the hierarchy"));
-        ReadChildrenRequest.Body body = request == null || request.getRequest() == null
-                ? new ReadChildrenRequest.Body() : request.getRequest();
+        ReadChildrenRequestBody body = request == null || request.getRequest() == null
+                ? new ReadChildrenRequestBody() : request.getRequest();
         int limit = body.limitOrDefault();
         boolean withDescendantCounts = body.countDescendantsOrDefault();
         String query = AppUtil.isBlank(body.getQuery()) ? null : body.getQuery().trim();
@@ -237,59 +303,69 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         // anywhere under orgId), but a plain, filter-less read stays the original "direct children only" default -
         // so a caller who just passes orgId never gets the whole hierarchy back without asking for it.
         int depthLimit = body.getDepth() != null ? Math.min(body.getDepth(), maxDepth) : query != null ? maxDepth : 1;
+        // the org's position in the whole hierarchy (an L0 root is level 1) - not relative to this call's orgId, so
+        // calling /read on a deeply-nested org still reports that org's real, absolute level
+        int rootLevel = orgHierarchyRepository.chainUp(orgId).size();
 
-        List<OrgNode> page;
+        List<OrgHierarchyDtoWithDepth> page;
         if (body.getOffset() != null) {
-            // offset wins over cursor when both are somehow given - see ReadChildrenRequest.Body#offset
-            page = repository.findDescendantsByOffset(orgId, depthLimit, query, queryPattern, body.getOffset(), limit + 1);
+            // offset wins over cursor when both are somehow given - see ReadChildrenRequestBody#offset
+            page = orgHierarchyRepository.findDescendantsByOffset(orgId, depthLimit, query, queryPattern, body.getOffset(), limit + 1);
         } else {
             String[] cursor = decodeCursor(body.getCursor());
-            page = repository.findDescendants(orgId, depthLimit, query, queryPattern,
+            page = orgHierarchyRepository.findDescendants(orgId, depthLimit, query, queryPattern,
                     cursor == null ? null : cursor[0], cursor == null ? null : cursor[1], limit + 1);
         }
         boolean hasMore = page.size() > limit;
-        List<OrgNode> items = hasMore ? page.subList(0, limit) : page;
+        List<OrgHierarchyDtoWithDepth> items = hasMore ? page.subList(0, limit) : page;
 
         List<ChildOrgSummary> summaries = new ArrayList<>();
-        for (OrgNode node : items) {
-            Integer descendantCount = withDescendantCounts ? repository.countDescendants(node.id()) : null;
-            summaries.add(new ChildOrgSummary(node.id(), node.name(), node.idle(), node.childCount(), descendantCount));
+        for (OrgHierarchyDtoWithDepth item : items) {
+            OrgHierarchyDto node = item.node();
+            Integer descendantCount = withDescendantCounts ? orgHierarchyRepository.countDescendants(node.id()) : null;
+            summaries.add(new ChildOrgSummary(node.id(), node.name(), node.idle(), node.childCount(), descendantCount,
+                    rootLevel + item.depth()));
         }
         // a cursor only makes sense when paging by cursor; an offset-paging caller computes its own next offset
-        String nextCursor = hasMore && body.getOffset() == null ? AppUtil.encodeCursor(lastOf(items).name(), lastOf(items).id()) : null;
+        String nextCursor = hasMore && body.getOffset() == null
+                ? AppUtil.encodeCursor(lastOf(items).node().name(), lastOf(items).node().id()) : null;
         ReadChildrenResponse result = new ReadChildrenResponse(root.id(), root.name(), root.idle(), root.childCount(),
-                summaries, limit, hasMore, nextCursor);
+                rootLevel, summaries, limit, hasMore, nextCursor);
         return versionedResponse(Constants.API_READ, result);
     }
 
     @Override
     @Transactional(value = OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER, readOnly = true)
     public ApiResponse readOrgHierarchy(String orgId, Integer depth, String accessToken) {
-        fetchUserIdFromToken(accessToken);
-        requireExisting(orgId, "Org " + orgId + " is not in the hierarchy");
+        authUtils.validateCallerAuthenticationAndFetchUserId(accessToken);
+        orgHierarchyValidator.requireExisting(orgHierarchyRepository.findById(orgId).isPresent(), "Org " + orgId + " is not in the hierarchy");
 
-        List<OrgNode> rows = repository.findSubtree(orgId); // already bounded by org-hierarchy.max-depth
-        Map<String, OrgNode> byId = new LinkedHashMap<>();
-        Map<String, List<OrgNode>> childrenByParent = new LinkedHashMap<>();
-        for (OrgNode node : rows) {
+        List<OrgHierarchyDto> rows = orgHierarchyRepository.findSubtree(orgId); // already bounded by org-hierarchy.max-depth
+        Map<String, OrgHierarchyDto> byId = new LinkedHashMap<>();
+        Map<String, List<OrgHierarchyDto>> childrenByParent = new LinkedHashMap<>();
+        for (OrgHierarchyDto node : rows) {
             byId.put(node.id(), node);
             if (node.parentId() != null) {
                 childrenByParent.computeIfAbsent(node.parentId(), k -> new ArrayList<>()).add(node);
             }
         }
-        OrgTreeNode tree = buildTree(byId.get(orgId), childrenByParent, depth, 1);
+        // the org's own absolute level in the whole hierarchy (an L0 root is level 1), so a /complete call on a
+        // deeply-nested org still reports its real level, not 1
+        int rootLevel = orgHierarchyRepository.chainUp(orgId).size();
+        OrgTreeNode tree = buildTree(byId.get(orgId), childrenByParent, depth, 1, rootLevel);
         HierarchyResponse result = new HierarchyResponse(tree, countNodes(tree));
         return versionedResponse(Constants.API_HIERARCHY, result);
     }
 
-    private static OrgTreeNode buildTree(OrgNode node, Map<String, List<OrgNode>> childrenByParent, Integer depthLimit, int currentDepth) {
+    private static OrgTreeNode buildTree(OrgHierarchyDto node, Map<String, List<OrgHierarchyDto>> childrenByParent, Integer depthLimit,
+                                          int currentDepth, int level) {
         List<OrgTreeNode> associations = new ArrayList<>();
         if (depthLimit == null || currentDepth < depthLimit) {
-            for (OrgNode child : childrenByParent.getOrDefault(node.id(), Collections.emptyList())) {
-                associations.add(buildTree(child, childrenByParent, depthLimit, currentDepth + 1));
+            for (OrgHierarchyDto child : childrenByParent.getOrDefault(node.id(), Collections.emptyList())) {
+                associations.add(buildTree(child, childrenByParent, depthLimit, currentDepth + 1, level + 1));
             }
         }
-        return new OrgTreeNode(node.id(), node.name(), node.idle(), node.childCount(), associations);
+        return new OrgTreeNode(node.id(), node.name(), node.idle(), node.childCount(), level, associations);
     }
 
     private static int countNodes(OrgTreeNode node) {
@@ -311,27 +387,9 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         }
     }
 
-    // ================================================================ shared steps
-
-    /** Verifies {@code accessToken} and returns the caller's user id; every public method needs a valid token to proceed. */
-    private String fetchUserIdFromToken(String accessToken) {
-        String userId = accessTokenValidator.resolveUserId(accessToken);
-        if (userId == null) {
-            log.warn("Rejected request: missing, invalid or expired access token");
-            throw new ServiceException(ErrorCode.UNAUTHORIZED, "Invalid or expired access token");
-        }
-        return userId;
-    }
-
-    private void requireExisting(String id, String message) {
-        if (!repository.findById(id).isPresent()) {
-            throw new ServiceException(ErrorCode.ORG_NOT_FOUND, message);
-        }
-    }
-
     /** Re-reads {@code id} under the lock and refuses with CONCURRENT_MODIFICATION if its parent moved since the pre-check. */
-    private OrgNode requireUnchangedParent(String id, String parentIdBeforeLock) {
-        OrgNode node = repository.findById(id).orElseThrow(() -> notFound(id));
+    private OrgHierarchyDto requireUnchangedParent(String id, String parentIdBeforeLock) {
+        OrgHierarchyDto node = orgHierarchyRepository.findById(id).orElseThrow(() -> notFound(id));
         if (!parentIdBeforeLock.equals(node.parentId())) {
             throw new ServiceException(ErrorCode.CONCURRENT_MODIFICATION,
                     "The parent of " + id + " changed while this request was waiting; retry");
@@ -339,75 +397,8 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         return node;
     }
 
-    private void requireNoCycle(String orgId, String newParentId) {
-        if (repository.chainUp(newParentId).contains(orgId)) {
-            throw new ServiceException(ErrorCode.CYCLE_DETECTED,
-                    "Org " + orgId + " cannot be placed under " + newParentId + ": that is one of its own descendants");
-        }
-    }
-
     private static String nameOrId(OrganisationRecord record) {
         return AppUtil.defaultIfBlank(record.name(), record.id());
-    }
-
-    private static List<String> identifiersOf(List<AssociationRef> associations) {
-        List<String> ids = new ArrayList<>();
-        for (AssociationRef ref : associations) {
-            ids.add(ref.getChildOrgId());
-        }
-        return ids;
-    }
-
-    /**
-     * One outcome message for a whole {@code /link} batch (the only remaining batch write - {@code /unlink} became a
-     * single-org operation). When every child succeeded, this is just {@code allSucceededMessage} (the plain,
-     * orgId-free wording) - the orgIds themselves go to the log, not the response. A batch with any failures still
-     * names the failed orgIds and their reasons, since the caller needs that to act on it.
-     */
-    private static String summaryMessage(String verb, String preposition, String allSucceededMessage, List<OrgOperationResult> results) {
-        List<OrgOperationResult> failures = failuresOf(results);
-        if (failures.isEmpty()) {
-            return allSucceededMessage;
-        }
-
-        StringBuilder message = new StringBuilder(allSucceededMessage).append("; ")
-                .append("Failed to ").append(verb).append(" organisation").append(failures.size() > 1 ? "s " : " ")
-                .append(preposition).append(" the hierarchy for orgId").append(failures.size() > 1 ? "s: " : ": ");
-        List<String> failureParts = new ArrayList<>();
-        for (OrgOperationResult failure : failures) {
-            failureParts.add(failure.getIdentifier() + " (" + failure.getMessage() + ")");
-        }
-        return message.append(String.join(", ", failureParts)).toString();
-    }
-
-    /** Logs the batch outcome at info level with every orgId involved, since the response message itself no longer carries them. */
-    private static void logOutcome(String operation, String parentId, List<OrgOperationResult> results) {
-        List<String> succeededIds = new ArrayList<>();
-        for (OrgOperationResult result : results) {
-            if (result.isSuccess()) {
-                succeededIds.add(result.getIdentifier());
-            }
-        }
-        List<OrgOperationResult> failures = failuresOf(results);
-        if (failures.isEmpty()) {
-            log.info("{} done: parentId={}, succeededChildIds={}", operation, parentId, succeededIds);
-        } else {
-            List<String> failureDetails = new ArrayList<>();
-            for (OrgOperationResult failure : failures) {
-                failureDetails.add(failure.getIdentifier() + " (" + failure.getMessage() + ")");
-            }
-            log.warn("{} done: parentId={}, succeededChildIds={}, failedChildren={}", operation, parentId, succeededIds, failureDetails);
-        }
-    }
-
-    private static List<OrgOperationResult> failuresOf(List<OrgOperationResult> results) {
-        List<OrgOperationResult> failures = new ArrayList<>();
-        for (OrgOperationResult result : results) {
-            if (!result.isSuccess()) {
-                failures.add(result);
-            }
-        }
-        return failures;
     }
 
     private static TreeSet<String> sorted(String... ids) {
@@ -422,7 +413,7 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         return new TreeSet<>(ids);
     }
 
-    private static OrgNode lastOf(List<OrgNode> items) {
+    private static OrgHierarchyDtoWithDepth lastOf(List<OrgHierarchyDtoWithDepth> items) {
         return items.get(items.size() - 1);
     }
 

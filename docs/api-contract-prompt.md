@@ -194,12 +194,14 @@ six APIs in `cb-org-hierarchy-service`: **link**, **unlink**, **move**, **get co
       "name": "Ministry of Example",
       "idle": false,
       "childCount": 2,
+      "level": 1,
       "associations": [
         {
           "id": "01357983854455193614",
           "name": "Department A",
           "idle": false,
           "childCount": 0,
+          "level": 2,
           "associations": []
         }
       ],
@@ -209,6 +211,9 @@ six APIs in `cb-org-hierarchy-service`: **link**, **unlink**, **move**, **get co
   ```
   - `result.id`/`name`/`idle`/`childCount`/`associations` describe `orgId` itself; `associations` nests the same
     shape recursively for every descendant (cut off at `depth` levels below the root, if given).
+  - `result.level`/each descendant's own `level` is that org's **absolute** position in the whole hierarchy (an L0
+    root is level `1`), not relative to this call's `orgId` - calling `/complete` on an org nested three levels
+    down still reports its real level (e.g. `4`), not `1`. Computed at read time on every call, not stored.
   - `result.count` is the total number of nodes in the subtree, `orgId` itself included.
 - **Error response (400 - validation failure, e.g. `depth` is not a valid integer)**:
   ```json
@@ -339,13 +344,15 @@ six APIs in `cb-org-hierarchy-service`: **link**, **unlink**, **move**, **get co
       "name": "Ministry of Example",
       "idle": false,
       "childCount": 2,
+      "level": 1,
       "associations": [
         {
           "id": "0142691971194388490",
           "name": "AIIDCO",
           "idle": false,
           "childCount": 1,
-          "descendantCount": 3
+          "descendantCount": 3,
+          "level": 2
         }
       ],
       "limit": 20,
@@ -355,8 +362,12 @@ six APIs in `cb-org-hierarchy-service`: **link**, **unlink**, **move**, **get co
   }
   ```
   - `result.id`/`name`/`idle`/`childCount` describe `orgId` itself (same field names as "get complete hierarchy").
+  - `result.level` is `orgId`'s own **absolute** level in the whole hierarchy (an L0 root is level `1`) - calling
+    `/read` on a deeply-nested org still reports its real level, not `1`.
   - `result.associations` is always a **flat** list of matches (never nested, unlike "get complete hierarchy") - each
-    entry is its own `id`/`name`/`idle`/`childCount`, plus `descendantCount` when `countDescendants` was true.
+    entry is its own `id`/`name`/`idle`/`childCount`/`level`, plus `descendantCount` when `countDescendants` was true.
+    Each entry's `level` is that specific descendant's own absolute level, which can vary within the same flat list
+    when `depth > 1` or `query` reaches beyond direct children - it is not always `result.level + 1`.
   - `result.nextCursor` is present only when `hasMore` is true **and** paging was by `cursor` (omitted/`null` when
     paging by `offset`, or when there is no next page).
 - **Error response (400 - validation failure, e.g. `depth: 0` or `offset: -1`)**:
@@ -392,3 +403,6 @@ six APIs in `cb-org-hierarchy-service`: **link**, **unlink**, **move**, **get co
   "search this subtree" depending on which fields are sent. Make sure the doc is clear that `query` searches the
   whole subtree regardless of `depth` (they're independent controls), and that unlink (#2) now cascades by default -
   these two are easy to misdescribe if skimmed instead of read closely.
+- `level` (added to #4 and #6) is never stored - it's computed fresh on every call from the org's current parent
+  chain, so it's always consistent with the live hierarchy and needs no changes to link/unlink/move. Don't document
+  it as a stored/indexed field.

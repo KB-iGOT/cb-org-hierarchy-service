@@ -20,45 +20,45 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
-import javax.validation.Valid;
+import jakarta.validation.Valid;
 
 @RestController
 @RequestMapping("/org/v2/hierarchy")
 public class OrgHierarchyController {
 
-    private final OrgHierarchyService service;
+    private final OrgHierarchyService orgHierarchyService;
     private final BulkLinkFileService bulkLinkFileService;
 
-    public OrgHierarchyController(OrgHierarchyService service, BulkLinkFileService bulkLinkFileService) {
-        this.service = service;
+    public OrgHierarchyController(OrgHierarchyService orgHierarchyService, BulkLinkFileService bulkLinkFileService) {
+        this.orgHierarchyService = orgHierarchyService;
         this.bulkLinkFileService = bulkLinkFileService;
     }
 
     @PostMapping("/link")
     public ResponseEntity<ApiResponse> link(@Valid @RequestBody LinkOrgRequest request,
                                              @RequestHeader(Constants.AUTH_TOKEN_HEADER) String accessToken) {
-        ApiResponse response = service.linkOrgToHierarchy(request, accessToken);
+        ApiResponse response = orgHierarchyService.linkOrgToHierarchy(request, accessToken);
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 
     @PostMapping("/unlink")
     public ResponseEntity<ApiResponse> unlink(@Valid @RequestBody UnlinkOrgRequest request,
                                               @RequestHeader(Constants.AUTH_TOKEN_HEADER) String accessToken) {
-        ApiResponse response = service.unlinkOrgFromHierarchy(request, accessToken);
+        ApiResponse response = orgHierarchyService.unlinkOrgFromHierarchy(request, accessToken);
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 
     @PostMapping("/move")
     public ResponseEntity<ApiResponse> move(@Valid @RequestBody MoveOrgRequest request,
                                              @RequestHeader(Constants.AUTH_TOKEN_HEADER) String accessToken) {
-        ApiResponse response = service.moveOrgInHierarchy(request, accessToken);
+        ApiResponse response = orgHierarchyService.moveOrgInHierarchy(request, accessToken);
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 
     @GetMapping("/{orgId}/complete")
     public ResponseEntity<ApiResponse> getCompleteHierarchy(@PathVariable String orgId, @RequestParam(required = false) Integer depth,
                                                             @RequestHeader(Constants.AUTH_TOKEN_HEADER) String accessToken) {
-        ApiResponse response = service.readOrgHierarchy(orgId, depth, accessToken);
+        ApiResponse response = orgHierarchyService.readOrgHierarchy(orgId, depth, accessToken);
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 
@@ -66,7 +66,7 @@ public class OrgHierarchyController {
     public ResponseEntity<ApiResponse> read(@PathVariable String orgId,
                                              @Valid @RequestBody(required = false) ReadChildrenRequest request,
                                              @RequestHeader(Constants.AUTH_TOKEN_HEADER) String accessToken) {
-        ApiResponse response = service.readOrgChildren(orgId, request, accessToken);
+        ApiResponse response = orgHierarchyService.readOrgChildren(orgId, request, accessToken);
         return new ResponseEntity<>(response, response.getResponseCode());
     }
 

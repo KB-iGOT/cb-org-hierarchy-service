@@ -124,7 +124,7 @@ public final class BulkLinkSheetReader {
                 duplicatesSkipped++; // childOrgId must be distinct; first occurrence wins, parentOrgId may repeat freely
                 continue;
             }
-            rows.add(new BulkLinkRow(parentOrgId, childOrgId));
+            rows.add(new BulkLinkRow(rowNumber, parentOrgId, childOrgId));
         }
         return new ParsedSheet(rows, rowFailures, duplicatesSkipped);
     }

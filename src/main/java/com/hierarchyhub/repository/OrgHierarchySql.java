@@ -71,7 +71,7 @@ final class OrgHierarchySql {
             "  SELECT o.id, o.name, o.parent_id, o.idle, o.child_count, o.created_at, o.created_by, o.updated_at, o.updated_by, s.depth + 1 " +
             "  FROM org_hierarchy o JOIN sub s ON o.parent_id = s.id " +
             "  WHERE s.depth < :depthLimit " +
-            ") SELECT " + SELECT_COLUMNS + " FROM sub " +
+            ") SELECT " + SELECT_COLUMNS + ", depth FROM sub " +
             "WHERE (:queryExact IS NULL OR id = :queryExact OR lower(name) LIKE lower(:queryPattern) ESCAPE '\\') " +
             "ORDER BY lower(name), id LIMIT :limit";
 
@@ -83,7 +83,7 @@ final class OrgHierarchySql {
             "  SELECT o.id, o.name, o.parent_id, o.idle, o.child_count, o.created_at, o.created_by, o.updated_at, o.updated_by, s.depth + 1 " +
             "  FROM org_hierarchy o JOIN sub s ON o.parent_id = s.id " +
             "  WHERE s.depth < :depthLimit " +
-            ") SELECT " + SELECT_COLUMNS + " FROM sub " +
+            ") SELECT " + SELECT_COLUMNS + ", depth FROM sub " +
             "WHERE (:queryExact IS NULL OR id = :queryExact OR lower(name) LIKE lower(:queryPattern) ESCAPE '\\') " +
             "AND (lower(name), id) > (lower(:cursorName), :cursorId) " +
             "ORDER BY lower(name), id LIMIT :limit";
@@ -101,7 +101,7 @@ final class OrgHierarchySql {
             "  SELECT o.id, o.name, o.parent_id, o.idle, o.child_count, o.created_at, o.created_by, o.updated_at, o.updated_by, s.depth + 1 " +
             "  FROM org_hierarchy o JOIN sub s ON o.parent_id = s.id " +
             "  WHERE s.depth < :depthLimit " +
-            ") SELECT " + SELECT_COLUMNS + " FROM sub " +
+            ") SELECT " + SELECT_COLUMNS + ", depth FROM sub " +
             "WHERE (:queryExact IS NULL OR id = :queryExact OR lower(name) LIKE lower(:queryPattern) ESCAPE '\\') " +
             "ORDER BY lower(name), id LIMIT :limit OFFSET :offset";
 
@@ -113,6 +113,19 @@ final class OrgHierarchySql {
             "  SELECT o.id, s.depth + 1 FROM org_hierarchy o JOIN sub s ON o.parent_id = s.id " +
             "  WHERE s.depth < :maxDepth " +
             ") SELECT count(*) - 1 FROM sub";
+
+    /**
+     * Just the ids of the subtree rooted at {@code id} (itself included), bounded by {@code maxDepth} hops - no
+     * other column is read, so unlinking a 500+ row branch doesn't instantiate 500+ full {@code OrgHierarchyDto}
+     * objects on heap just to throw away everything except their ids.
+     */
+    static final String DESCENDANT_SUBTREE_IDS =
+            "WITH RECURSIVE sub(id, depth) AS ( " +
+            "  SELECT id, 1 FROM org_hierarchy WHERE id = :id " +
+            "  UNION ALL " +
+            "  SELECT o.id, s.depth + 1 FROM org_hierarchy o JOIN sub s ON o.parent_id = s.id " +
+            "  WHERE s.depth < :maxDepth " +
+            ") SELECT id FROM sub";
 
     /** Every row in the subtree rooted at {@code id} (itself included), bounded by {@code maxDepth} hops. */
     static final String SUBTREE =

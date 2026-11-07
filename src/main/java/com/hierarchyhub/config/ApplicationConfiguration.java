@@ -1,7 +1,9 @@
 package com.hierarchyhub.config;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
 @Component
 public class ApplicationConfiguration {
@@ -17,6 +19,12 @@ public class ApplicationConfiguration {
 
     @Value("${neo4j.maxlevel}")
     private int maxLevel;
+
+    /** common-util's own {@code OutboundRequestHandlerServiceImpl} needs this bean to exist, even though this service never calls it. */
+    @Bean
+    public RestTemplate restTemplate() {
+        return new RestTemplate();
+    }
 
     public String getNeo4jUserName() {
         return neo4jUserName;

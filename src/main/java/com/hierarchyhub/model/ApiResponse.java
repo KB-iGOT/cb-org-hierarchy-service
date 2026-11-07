@@ -3,6 +3,9 @@ package com.hierarchyhub.model;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hierarchyhub.dto.Constants;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.http.HttpStatus;
 
 import java.sql.Timestamp;
@@ -10,6 +13,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
+@Getter
+@Setter
 public class ApiResponse {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -22,6 +27,10 @@ public class ApiResponse {
 
     // LinkedHashMap, not HashMap: callers build this field-by-field in a deliberate order (id, name, ... then
     // associations), and the JSON response should come out in that same order instead of HashMap's unspecified one.
+    // Accessors are hand-written, not Lombok: the public name (getResult/setResult) deliberately doesn't match this
+    // field's own name, so the class-level @Getter/@Setter are turned off for just this one field.
+    @Getter(AccessLevel.NONE)
+    @Setter(AccessLevel.NONE)
     private transient Map<String, Object> response = new LinkedHashMap<>();
 
     public ApiResponse() {
@@ -33,46 +42,6 @@ public class ApiResponse {
     public ApiResponse(String id) {
         this();
         this.id = id;
-    }
-
-    public String getId() {
-        return id;
-    }
-
-    public void setId(String id) {
-        this.id = id;
-    }
-
-    public String getVer() {
-        return ver;
-    }
-
-    public void setVer(String ver) {
-        this.ver = ver;
-    }
-
-    public String getTs() {
-        return ts;
-    }
-
-    public void setTs(String ts) {
-        this.ts = ts;
-    }
-
-    public ApiRespParam getParams() {
-        return params;
-    }
-
-    public void setParams(ApiRespParam params) {
-        this.params = params;
-    }
-
-    public HttpStatus getResponseCode() {
-        return responseCode;
-    }
-
-    public void setResponseCode(HttpStatus responseCode) {
-        this.responseCode = responseCode;
     }
 
     public Map<String, Object> getResult() {

@@ -1,25 +1,17 @@
 package com.hierarchyhub.dto;
 
-import javax.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotBlank;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
-/** One child to attach, as sent in {@code request.associations[]}. */
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
 public class AssociationRef {
 
     @NotBlank(message = "childOrgId is required")
     private String childOrgId;
-
-    public AssociationRef() {
-    }
-
-    public AssociationRef(String childOrgId) {
-        this.childOrgId = childOrgId;
-    }
-
-    public String getChildOrgId() {
-        return childOrgId;
-    }
-
-    public void setChildOrgId(String childOrgId) {
-        this.childOrgId = childOrgId;
-    }
 }

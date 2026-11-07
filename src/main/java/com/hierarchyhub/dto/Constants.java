@@ -43,6 +43,67 @@ public class Constants {
     public static final String MSG_ORG_REMOVED_FROM_HIERARCHY = "Successfully removed organisation from the hierarchy";
     public static final String MSG_ORG_MOVED_IN_HIERARCHY = "Successfully moved organisation to the hierarchy";
 
+    // Cassandra organisation master (sunbird.organisation): keyspace/table and column names, named after the actual
+    // column value, not a semantic alias - e.g. ORGNAME = "orgname", not NAME_COLUMN = "orgname"
+    public static final String CASSANDRA_KEYSPACE = "sunbird";
+    public static final String CASSANDRA_ORGANISATION_TABLE = "organisation";
+    public static final String ORGNAME = "orgname";
+    public static final String STATUS = "status";
+    public static final String MINISTRYORSTATEID = "ministryorstateid";
+    public static final String ORGANISATIONTYPE = "organisationtype";
+    public static final String MINISTRYORSTATETYPE = "ministryorstatetype";
+    public static final int ACTIVE_STATUS = 1;
+
+    // the two hierarchy-type values a ministryOrStateType/hierarchyTypeOf ever returns
+    public static final String HIERARCHY_TYPE_MINISTRY = "ministry";
+    public static final String HIERARCHY_TYPE_STATE = "state";
+
+    // org_hierarchy (PostgreSQL) columns read by OrgHierarchyRepository's row mapper
+    public static final String NAME = "name";
+    public static final String PARENT_ID = "parent_id";
+    public static final String IDLE = "idle";
+    public static final String CHILD_COUNT = "child_count";
+    public static final String CREATED_AT = "created_at";
+    public static final String CREATED_BY = "created_by";
+    public static final String UPDATED_AT = "updated_at";
+    public static final String UPDATED_BY = "updated_by";
+    public static final String DEPTH = "depth";
+
+    // org-hierarchy.ministry.missing policy values
+    public static final String MINISTRY_MISSING_POLICY_ALLOW = "ALLOW";
+
+    // POST /link: batch response envelope status/keys and per-rule rejection message templates (see
+    // docs/link-api-optimization-and-spec.md for the full guard matrix each of these corresponds to)
+    public static final String STATUS_PARTIAL_SUCCESS = "PARTIAL_SUCCESS";
+    public static final String KEY_TOTAL_COUNT = "totalCount";
+    public static final String KEY_SUCCESS_COUNT = "successCount";
+    public static final String KEY_FAILED_COUNT = "failedCount";
+    public static final String KEY_ERRORS = "errors";
+    public static final String MSG_ORG_PARTIALLY_ADDED = "Partially added organisations to the hierarchy";
+    public static final String MSG_ALL_ORGS_FAILED_TO_LINK = "Failed to add organisations to the hierarchy";
+    public static final String MSG_FAILED_TO_LINK_N_OF_TOTAL = "Failed to link %d of %d organisations";
+
+    public static final String ERR_CANNOT_BE_OWN_PARENT = "An org cannot be its own parent";
+    public static final String ERR_ORG_NOT_FOUND_IN_TABLE = "Org %s not found in organisation table";
+    public static final String ERR_ORG_IS_INACTIVE = "Org %s is inactive";
+    public static final String ERR_ORG_IS_ROOT_L0 = "Org %s is a %s (organizationType %d): it cannot be attached under another org";
+    public static final String ERR_HIERARCHY_TYPE_MISMATCH = "Org %s belongs to the %s hierarchy but parent %s belongs to the %s hierarchy";
+    public static final String ERR_DYNAMIC_MINISTRY_MISMATCH = "Org %s belongs to %s %s but parent %s belongs to %s %s";
+    public static final String ERR_ALREADY_HAS_PARENT = "Org %s is already under %s; use /move";
+    public static final String ERR_CYCLE_DETECTED = "Org %s cannot be placed under %s: that is one of its own descendants";
+
+    public static final String ERR_PARENT_NOT_FOUND_IN_TABLE = "Parent %s not found in organisation table";
+    public static final String ERR_PARENT_IS_INACTIVE = "Parent %s is inactive";
+    public static final String ERR_PARENT_NOT_IN_HIERARCHY = "Parent %s is not in the hierarchy: map it first (parents are mapped top-down)";
+
+    // POST /unlink
+    public static final String ERR_ORGANISATION_HAS_CHILDREN = "Organisation %s has active child organisations in the "
+            + "hierarchy. Pass 'requireLeaf: false' to unlink the organisation along with its entire subtree.";
+
+    // POST /move
+    public static final String ERR_NEW_PARENT_NOT_IN_HIERARCHY = "Parent %s is not in the hierarchy";
+    public static final String MSG_ALREADY_LINKED_UNDER_PARENT = "Organisation is already linked under this parent";
+
     private Constants() {
         throw new IllegalStateException("Utility class");
     }

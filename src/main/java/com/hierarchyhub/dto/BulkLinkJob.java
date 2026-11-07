@@ -1,13 +1,11 @@
 package com.hierarchyhub.dto;
 
+import lombok.Getter;
+
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Tracks one {@code /bulk/link} file upload's progress while {@link com.hierarchyhub.service.BulkLinkFileService}
- * runs it in the background. Purely in-process bookkeeping for the completion log line - nothing here is persisted
- * or exposed through the API, which responds once, at submission, with just {@code BulkLinkUploadResponse}.
- */
+@Getter
 public final class BulkLinkJob {
 
     /** At most this many row failures are kept (for the completion log); {@link #failedRows} still counts every one of them. */
@@ -48,43 +46,4 @@ public final class BulkLinkJob {
         }
     }
 
-    public String getJobId() {
-        return jobId;
-    }
-
-    public String getFileName() {
-        return fileName;
-    }
-
-    public String getCreatedBy() {
-        return createdBy;
-    }
-
-    public String getDateCreatedOn() {
-        return dateCreatedOn;
-    }
-
-    public String getRootOrgId() {
-        return rootOrgId;
-    }
-
-    public int getTotalRows() {
-        return totalRows;
-    }
-
-    public int getDuplicateChildRowsSkipped() {
-        return duplicateChildRowsSkipped;
-    }
-
-    public int getSucceededRows() {
-        return succeededRows;
-    }
-
-    public int getFailedRows() {
-        return failedRows;
-    }
-
-    public List<BulkLinkRowFailure> getFailures() {
-        return failures;
-    }
 }
