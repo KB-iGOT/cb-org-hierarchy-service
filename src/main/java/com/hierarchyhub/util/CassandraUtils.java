@@ -58,8 +58,9 @@ public class CassandraUtils {
         String ministryId = (String) row.get(Constants.MINISTRYORSTATEID);
         Number orgType = (Number) row.get(Constants.ORGANISATIONTYPE);
         String ministryOrStateType = (String) row.get(Constants.MINISTRYORSTATETYPE);
+        String parentPathId = (String) row.get(Constants.PARENTPATHID);
         boolean active = status != null && status.intValue() == Constants.ACTIVE_STATUS;
         return new OrganisationRecord(id, name, active, ministryId, orgType == null ? null : orgType.intValue(),
-                ministryOrStateType);
+                ministryOrStateType, parentPathId);
     }
 }

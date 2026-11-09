@@ -137,6 +137,24 @@
 			<optional>true</optional>
 		</dependency>
 
+		<!-- Hierarchy mutation event streaming (/link, /bulk/link, /move, /unlink -> org-hierarchy-edges topic) -->
+		<dependency>
+			<groupId>org.springframework.kafka</groupId>
+			<artifactId>spring-kafka</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.kafka</groupId>
+			<artifactId>spring-kafka-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- The default RestTemplate request factory (JDK HttpURLConnection) refuses PATCH ("Invalid HTTP method: PATCH")
+		     - needed for the shared RestTemplate bean to call the external Sunbird org-update API. -->
+		<dependency>
+			<groupId>org.apache.httpcomponents.client5</groupId>
+			<artifactId>httpclient5</artifactId>
+		</dependency>
+
 	</dependencies>
 
 	<build>

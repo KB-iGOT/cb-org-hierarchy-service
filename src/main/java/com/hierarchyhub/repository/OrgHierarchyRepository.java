@@ -4,6 +4,7 @@ import com.hierarchyhub.dto.Constants;
 import com.hierarchyhub.model.OrgHierarchyDto;
 import com.hierarchyhub.model.OrgHierarchyDtoWithDepth;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -14,6 +15,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -98,6 +100,22 @@ public class OrgHierarchyRepository {
     public List<String> findDescendantSubtreeOrgIds(String id) {
         MapSqlParameterSource p = params("id", id).addValue("maxDepth", maxDepth);
         return jdbc.queryForList(OrgHierarchySql.DESCENDANT_SUBTREE_IDS, p, String.class);
+    }
+
+    /** One row of {@link #streamSubtreeWithPaths}: the node itself, its hop count below {@code id}, and its own relative path (ids from {@code id} down to it, inclusive). */
+    public interface PathRowCallback {
+        void process(OrgHierarchyDto node, int depth, List<String> pathIds);
+    }
+
+    /** Streams every row of {@code id}'s own subtree (itself included), each paired with its relative path - see {@link OrgHierarchySql#SUBTREE_WITH_PATHS}. */
+    public void streamSubtreeWithPaths(String id, PathRowCallback callback) {
+        MapSqlParameterSource p = params("id", id).addValue("maxDepth", maxDepth);
+        jdbc.query(OrgHierarchySql.SUBTREE_WITH_PATHS, p, (RowCallbackHandler) rs -> {
+            OrgHierarchyDto node = mapRow(rs, 0);
+            int depth = rs.getInt(Constants.DEPTH);
+            String[] pathIds = (String[]) rs.getArray("path_ids").getArray();
+            callback.process(node, depth, Arrays.asList(pathIds));
+        });
     }
 
     /** Locks the given rows in the caller-supplied order (sort before calling, so two writers never deadlock). Must run inside a transaction. */

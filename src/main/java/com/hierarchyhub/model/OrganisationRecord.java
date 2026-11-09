@@ -15,4 +15,5 @@ public final class OrganisationRecord {
     private final String ministryId;
     private final Integer organizationType;
     private final String ministryOrStateType;
+    private final String parentPathId;
 }

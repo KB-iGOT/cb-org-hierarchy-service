@@ -6,6 +6,7 @@ import com.hierarchyhub.dto.AssociationRef;
 import com.hierarchyhub.dto.BatchLinkExecutionResult;
 import com.hierarchyhub.dto.BatchOperationResponse;
 import com.hierarchyhub.dto.ChildOrgSummary;
+import com.hierarchyhub.dto.HierarchyEvent;
 import com.hierarchyhub.dto.HierarchyResponse;
 import com.hierarchyhub.dto.LinkOrgRequest;
 import com.hierarchyhub.dto.OrgLinkErrorDetail;
@@ -23,6 +24,7 @@ import com.hierarchyhub.model.OrganisationRecord;
 import com.hierarchyhub.model.OrgHierarchyDto;
 import com.hierarchyhub.model.OrgHierarchyDtoWithDepth;
 import com.hierarchyhub.repository.OrgHierarchyRepository;
+import com.hierarchyhub.service.HierarchyEventPublisher;
 import com.hierarchyhub.service.OrgHierarchyService;
 import com.hierarchyhub.util.AppUtil;
 import com.hierarchyhub.util.AuthUtils;
@@ -34,6 +36,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.CollectionUtils;
 
 import java.util.ArrayList;
@@ -57,15 +61,17 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
     private final OrgHierarchyValidator orgHierarchyValidator;
     private final AuthUtils authUtils;
     private final CassandraUtils cassandraUtils;
+    private final HierarchyEventPublisher hierarchyEventPublisher;
     private final int maxDepth;
 
     public OrgHierarchyServiceImpl(OrgHierarchyRepository orgHierarchyRepository, OrgHierarchyValidator orgHierarchyValidator,
-                                    AuthUtils authUtils, CassandraUtils cassandraUtils,
+                                    AuthUtils authUtils, CassandraUtils cassandraUtils, HierarchyEventPublisher hierarchyEventPublisher,
                                     @Value("${org-hierarchy.max-depth}") int maxDepth) {
         this.orgHierarchyRepository = orgHierarchyRepository;
         this.orgHierarchyValidator = orgHierarchyValidator;
         this.authUtils = authUtils;
         this.cassandraUtils = cassandraUtils;
+        this.hierarchyEventPublisher = hierarchyEventPublisher;
         this.maxDepth = maxDepth;
     }
 
@@ -118,6 +124,13 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         persistBatchChildLinks(parentOrgId, userId, newChildIdsToInsert, newChildNamesToInsert, existingChildIdsToUpdate);
 
         logBatchLinkSuccessSummary(parentOrgId, succeededChildOrganisationIds, failureErrors.size());
+
+        List<HierarchyEvent> linkEventsToPublish = new ArrayList<>(succeededChildOrganisationIds.size());
+        for (String childId : succeededChildOrganisationIds) {
+            String childName = childOrganisationRecords.containsKey(childId) ? childOrganisationRecords.get(childId).name() : childId;
+            linkEventsToPublish.add(createLinkEvent(childId, parentOrgId, childName, userId));
+        }
+        publishAfterCommit(() -> hierarchyEventPublisher.publishBatchAsync(linkEventsToPublish));
 
         return new BatchLinkExecutionResult(succeededChildOrganisationIds, failureErrors);
     }
@@ -232,6 +245,10 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         orgHierarchyRepository.decrementChildCount(oldParentId);
         orgHierarchyRepository.incrementChildCount(newParentId);
         log.info("moveOrgInHierarchy completed: orgId={}, oldParentId={}, newParentId={}", orgId, oldParentId, newParentId);
+
+        HierarchyEvent moveEvent = createMoveEvent(orgId, newParentId, oldParentId, lockedOrgHierarchyDto.name(), userId);
+        publishAfterCommit(() -> hierarchyEventPublisher.publishAsync(moveEvent));
+
         MoveOrgResponse moved = new MoveOrgResponse(orgId, oldParentId, newParentId, true, Constants.MSG_ORG_MOVED_IN_HIERARCHY);
         return versionedResponse(Constants.API_MOVE, moved);
     }
@@ -271,6 +288,9 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         orgHierarchyRepository.unlinkRow(orgId, userId);
         orgHierarchyRepository.decrementChildCount(lockedOrgHierarchyDto.parentId());
         log.info("unlinkSingleLeafOrganisation completed: orgId={}, parentId={}", orgId, lockedOrgHierarchyDto.parentId());
+
+        HierarchyEvent unlinkEvent = createUnlinkEvent(orgId, lockedOrgHierarchyDto.parentId(), lockedOrgHierarchyDto.name(), userId);
+        publishAfterCommit(() -> hierarchyEventPublisher.publishAsync(unlinkEvent));
     }
 
     private void unlinkEntireSubtreeBranch(String orgId, String parentIdBeforeLock, String userId) {
@@ -285,6 +305,14 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         orgHierarchyRepository.decrementChildCount(lockedOrgHierarchyDto.parentId());
         log.info("unlinkEntireSubtreeBranch completed: orgId={}, parentId={}, unlinkedSubtreeOrgCount={}",
                 orgId, lockedOrgHierarchyDto.parentId(), descendantSubtreeOrgIds.size());
+
+        // Every detached org (orgId and its whole former branch) gets its own event - the branch's own internal
+        // parent/child pointers are gone now (all cleared to null in one statement), so each is reported unparented.
+        List<HierarchyEvent> subtreeUnlinkEvents = new ArrayList<>(descendantSubtreeOrgIds.size());
+        for (String detachedId : descendantSubtreeOrgIds) {
+            subtreeUnlinkEvents.add(createUnlinkEvent(detachedId, null, detachedId, userId));
+        }
+        publishAfterCommit(() -> hierarchyEventPublisher.publishBatchAsync(subtreeUnlinkEvents));
     }
 
     @Override
@@ -399,6 +427,38 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
 
     private static String nameOrId(OrganisationRecord record) {
         return AppUtil.defaultIfBlank(record.name(), record.id());
+    }
+
+    // ================================================================ Kafka event publishing (post-commit only)
+
+    /**
+     * Zero-phantom-events rule: {@code publishTask} only ever runs after the enclosing PostgreSQL transaction has
+     * actually committed - if it rolls back, nothing is published. Runs immediately when there is no active
+     * transaction (e.g. a direct unit-test call), so callers never need their own fallback.
+     */
+    private void publishAfterCommit(Runnable publishTask) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publishTask.run();
+                }
+            });
+        } else {
+            publishTask.run();
+        }
+    }
+
+    private static HierarchyEvent createLinkEvent(String childId, String parentId, String name, String userId) {
+        return new HierarchyEvent(childId, parentId, null, name, false, Constants.EVENT_TYPE_LINK, System.currentTimeMillis(), userId);
+    }
+
+    private static HierarchyEvent createMoveEvent(String orgId, String newParentId, String oldParentId, String name, String userId) {
+        return new HierarchyEvent(orgId, newParentId, oldParentId, name, false, Constants.EVENT_TYPE_MOVE, System.currentTimeMillis(), userId);
+    }
+
+    private static HierarchyEvent createUnlinkEvent(String orgId, String prevParentId, String name, String userId) {
+        return new HierarchyEvent(orgId, null, prevParentId, name, true, Constants.EVENT_TYPE_UNLINK, System.currentTimeMillis(), userId);
     }
 
     private static TreeSet<String> sorted(String... ids) {

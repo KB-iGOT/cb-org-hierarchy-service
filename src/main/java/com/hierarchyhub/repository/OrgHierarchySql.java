@@ -127,6 +127,23 @@ final class OrgHierarchySql {
             "  WHERE s.depth < :maxDepth " +
             ") SELECT id FROM sub";
 
+    /**
+     * Every row in the subtree rooted at {@code id} (itself included), bounded by {@code maxDepth} hops, each paired
+     * with its own relative path (the ids from {@code id} itself down to that row, inclusive) accumulated in a
+     * Postgres array - the parentPathId sync engine prepends this to the ancestor chain above {@code id} instead of
+     * re-walking from each descendant's own row.
+     */
+    static final String SUBTREE_WITH_PATHS =
+            "WITH RECURSIVE sub AS ( " +
+            "  SELECT " + SELECT_COLUMNS + ", ARRAY[id]::text[] AS path_ids, 0 AS depth " +
+            "  FROM org_hierarchy WHERE id = :id " +
+            "  UNION ALL " +
+            "  SELECT o.id, o.name, o.parent_id, o.idle, o.child_count, o.created_at, o.created_by, o.updated_at, o.updated_by, " +
+            "         s.path_ids || o.id::text, s.depth + 1 " +
+            "  FROM org_hierarchy o JOIN sub s ON o.parent_id = s.id " +
+            "  WHERE s.depth < :maxDepth " +
+            ") SELECT " + SELECT_COLUMNS + ", depth, path_ids FROM sub ORDER BY depth ASC";
+
     /** Every row in the subtree rooted at {@code id} (itself included), bounded by {@code maxDepth} hops. */
     static final String SUBTREE =
             "WITH RECURSIVE sub AS ( " +

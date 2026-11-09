@@ -438,7 +438,7 @@ public class OrgHierarchyValidatorTest {
     }
 
     private static OrganisationRecord organisation(String id, boolean active, String ministryId, Integer organizationType, String ministryOrStateType) {
-        return new OrganisationRecord(id, "Name of " + id, active, ministryId, organizationType, ministryOrStateType);
+        return new OrganisationRecord(id, "Name of " + id, active, ministryId, organizationType, ministryOrStateType, null);
     }
 
     private static OrgHierarchyDto node(String id, String parentId) {

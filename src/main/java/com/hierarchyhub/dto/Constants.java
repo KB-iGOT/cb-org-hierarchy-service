@@ -104,6 +104,36 @@ public class Constants {
     public static final String ERR_NEW_PARENT_NOT_IN_HIERARCHY = "Parent %s is not in the hierarchy";
     public static final String MSG_ALREADY_LINKED_UNDER_PARENT = "Organisation is already linked under this parent";
 
+    // Kafka hierarchy-mutation event streaming (org-hierarchy-edges topic): event types and system-actor labels
+    public static final String EVENT_TYPE_LINK = "LINK";
+    public static final String EVENT_TYPE_BULK_LINK = "BULK_LINK";
+    public static final String EVENT_TYPE_MOVE = "MOVE";
+    public static final String EVENT_TYPE_UNLINK = "UNLINK";
+    public static final String SYSTEM_USER = "system";
+    public static final String PROJECTION_FAILED_PREFIX = "PROJECTION_FAILED: ";
+
+    // parentPathId: the materialized ancestor breadcrumb synced to Cassandra/Elasticsearch after every mutation
+    public static final String PATH_SEPARATOR = "_";
+    public static final String EMPTY_PARENT_PATH = "";
+    public static final String PARENTPATHID = "parentpathid";
+
+    // admin parent-path repair/sync APIs
+    public static final String API_ADMIN_PARENT_PATH = "api.org.hierarchy.admin.parentpath";
+    public static final String API_ADMIN_PARENT_PATH_SYNC = "api.org.hierarchy.admin.parentpath.sync";
+
+    // bounded executor bean names
+    public static final String PARENT_PATH_EXECUTOR = "parentPathExecutor";
+
+    // Sunbird org-update API request body field names
+    public static final String ORGANIZATION_ID = "orgId";
+    public static final String PARENT_PATH_ID_KEY = "parentPathId";
+
+    // outbound HTTP calls to external Sunbird APIs (via the shared org.igot.common OutboundRequestHandlerServiceImpl)
+    public static final String AUTHORIZATION_HEADER = "Authorization";
+    public static final String X_AUTH_USER_HEADER = "x-authenticated-user-token";
+    public static final String RESPONSE_CODE_KEY = "responseCode";
+    public static final String RESPONSE_CODE_OK = "OK";
+
     private Constants() {
         throw new IllegalStateException("Utility class");
     }
