@@ -69,6 +69,14 @@ public class Constants {
     public static final String UPDATED_BY = "updated_by";
     public static final String DEPTH = "depth";
 
+    // org_hierarchy_level (PostgreSQL) columns read by OrgHierarchyLevelRepository's row mapper
+    public static final String LEVEL = "level";
+    public static final String DESCRIPTION = "description";
+
+    // named-parameter key for the acting user on every org_hierarchy/org_hierarchy_level audit write
+    // (created_by/updated_by), shared by OrgHierarchyRepository and OrgHierarchyLevelRepository
+    public static final String PARAM_UPDATED_BY = "by";
+
     // org-hierarchy.ministry.missing policy values
     public static final String MINISTRY_MISSING_POLICY_ALLOW = "ALLOW";
 
@@ -123,6 +131,13 @@ public class Constants {
 
     // bounded executor bean names
     public static final String PARENT_PATH_EXECUTOR = "parentPathExecutor";
+
+    // org_hierarchy_level: hierarchy level customization/retrieval (PATCH & GET /org/v2/hierarchy/levels/{rootOrgId})
+    public static final String API_LEVELS_UPDATE = "api.org.hierarchy.levels.update";
+    public static final String API_LEVELS_READ = "api.org.hierarchy.levels.read";
+    public static final String MSG_LEVELS_UPDATED = "Successfully updated hierarchy level definitions";
+    // a fixed business rule (also enforced by org_hierarchy_level's own CHECK constraint), never an environment setting
+    public static final int MAX_ALLOWED_LEVEL = 10;
 
     // Sunbird org-update API request body field names
     public static final String ORGANIZATION_ID = "orgId";

@@ -1,7 +1,8 @@
 package com.hierarchyhub.controller;
 
+import com.hierarchyhub.dto.ApiRequest;
 import com.hierarchyhub.dto.Constants;
-import com.hierarchyhub.dto.SyncParentPathRequest;
+import com.hierarchyhub.dto.SyncParentPathRequestBody;
 import com.hierarchyhub.model.ApiResponse;
 import com.hierarchyhub.service.OrgUpdateService;
 import org.springframework.http.ResponseEntity;
@@ -33,7 +34,7 @@ public class OrgHierarchyAdminController {
     /** Deep subtree sync: cascades from {@code rootOrgId} to every sub-child (or just the single node if {@code includeChildren=false}). */
     @PostMapping("/parent-path/sync/{rootOrgId}")
     public ResponseEntity<ApiResponse> syncSubtreeHierarchy(@PathVariable String rootOrgId,
-                                                             @RequestBody(required = false) SyncParentPathRequest request,
+                                                             @RequestBody(required = false) ApiRequest<SyncParentPathRequestBody> request,
                                                              @RequestHeader(Constants.AUTH_TOKEN_HEADER) String accessToken) {
         ApiResponse response = orgUpdateService.syncSubtreeParentPaths(rootOrgId, request, accessToken);
         return new ResponseEntity<>(response, response.getResponseCode());

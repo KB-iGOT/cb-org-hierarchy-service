@@ -14,5 +14,6 @@ public class OrgTreeNode {
     private final boolean idle;
     private final int childCount;
     private final int level;
+    private final String levelName;
     private final List<OrgTreeNode> associations;
 }

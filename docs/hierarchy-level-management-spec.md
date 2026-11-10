@@ -183,17 +183,19 @@ Allows authorized users to customize level names and descriptions.
 }
 ```
 
-### 4.2. Java DTO Definitions (3 Standalone Top-Level Classes in `com.hierarchyhub.dto`)
+### 4.2. Java DTO Definitions (1 Shared Generic Envelope + 2 Endpoint Classes in `com.hierarchyhub.dto`)
 
-In accordance with project standards (matching `LinkOrgRequest` $\rightarrow$ `LinkOrgRequestBody` $\rightarrow$ `AssociationRef`), all DTOs are defined as separate, standalone public classes:
+Matches every other write endpoint's own `{"request": {...}}` envelope, but instead of a bespoke `XRequest` outer
+class per endpoint (`LinkOrgRequest`/`MoveOrgRequest`/`UnlinkOrgRequest`/`ReadChildrenRequest`), every endpoint shares
+one generic `ApiRequest<T>` wrapper (see `docs/developer-coding-standards-and-api-flow-guide.md` section 2.2.3):
 
-**1. Outer Request Envelope (`com/hierarchyhub/dto/UpdateHierarchyLevelsRequest.java`)**:
+**1. Generic Envelope, Shared By Every Write Endpoint (`com/hierarchyhub/dto/ApiRequest.java`)** - not specific to
+levels, already used by `/link`, `/move`, `/unlink`, `/read`, and the parent-path admin sync endpoint:
 ```java
 package com.hierarchyhub.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -201,14 +203,15 @@ import lombok.Setter;
 @Getter
 @Setter
 @NoArgsConstructor
-@AllArgsConstructor
-public class UpdateHierarchyLevelsRequest {
+public class ApiRequest<T> {
 
     @NotNull(message = "request is required")
     @Valid
-    private UpdateHierarchyLevelsRequestBody request;
+    private T request;
 }
 ```
+The controller binds `@Valid @RequestBody ApiRequest<UpdateHierarchyLevelsRequestBody> request`, and
+`request.getRequest().getLevels()` reads the levels list exactly as it would through a bespoke outer class.
 
 **2. Request Body (`com/hierarchyhub/dto/UpdateHierarchyLevelsRequestBody.java`)**:
 ```java
@@ -216,7 +219,6 @@ package com.hierarchyhub.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -226,7 +228,6 @@ import java.util.List;
 @Getter
 @Setter
 @NoArgsConstructor
-@AllArgsConstructor
 public class UpdateHierarchyLevelsRequestBody {
 
     @NotEmpty(message = "levels list must not be empty")
@@ -235,7 +236,9 @@ public class UpdateHierarchyLevelsRequestBody {
 }
 ```
 
-**3. Item Model (`com/hierarchyhub/dto/HierarchyLevelItem.java`)**:
+**3. Item Model (`com/hierarchyhub/dto/HierarchyLevelItem.java`)** - reused, unchanged, as both the request item and the
+response-side row of a `levels` blueprint array (no separate `HierarchyLevelDto` twin - that duplication is gone, only
+the request-envelope split stayed, to keep the wire contract consistent with every sibling endpoint):
 ```java
 package com.hierarchyhub.dto;
 
@@ -270,7 +273,7 @@ public class HierarchyLevelItem {
 
 ```java
 @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
-public ApiResponse updateHierarchyLevels(String rootOrgId, UpdateHierarchyLevelsRequest request, String accessToken) {
+public ApiResponse updateHierarchyLevels(String rootOrgId, ApiRequest<UpdateHierarchyLevelsRequestBody> request, String accessToken) {
     String userId = authUtils.validateCallerAuthenticationAndFetchUserId(accessToken);
 
     // Guard 1: Verify rootOrgId exists in hierarchy

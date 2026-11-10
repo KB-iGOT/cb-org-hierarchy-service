@@ -1,8 +1,9 @@
 package com.hierarchyhub.service.impl;
 
 import com.hierarchyhub.config.ExternalServiceProperties;
+import com.hierarchyhub.dto.ApiRequest;
 import com.hierarchyhub.dto.Constants;
-import com.hierarchyhub.dto.SyncParentPathRequest;
+import com.hierarchyhub.dto.SyncParentPathRequestBody;
 import com.hierarchyhub.dto.SyncParentPathResponse;
 import com.hierarchyhub.exception.ErrorCode;
 import com.hierarchyhub.exception.ServiceException;
@@ -62,7 +63,7 @@ public class OrgUpdateServiceImpl implements OrgUpdateService {
 
     @Override
     public SyncParentPathResponse resyncParentPath(String orgId) {
-        return computeAndSyncParentPaths(orgId, new SyncParentPathRequest(true, false, false), Constants.SYSTEM_USER);
+        return computeAndSyncParentPaths(orgId, new SyncParentPathRequestBody(true, false, false), Constants.SYSTEM_USER);
     }
 
     @Override
@@ -73,14 +74,20 @@ public class OrgUpdateServiceImpl implements OrgUpdateService {
     }
 
     @Override
-    public ApiResponse syncSubtreeParentPaths(String rootOrgId, SyncParentPathRequest request, String accessToken) {
+    public ApiResponse syncSubtreeParentPaths(String rootOrgId, ApiRequest<SyncParentPathRequestBody> request, String accessToken) {
         String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
-        SyncParentPathRequest syncRequest = Objects.requireNonNullElseGet(request, SyncParentPathRequest::new);
+        SyncParentPathRequestBody syncRequest = resolveSyncRequestBody(request);
         SyncParentPathResponse result = computeAndSyncParentPaths(rootOrgId, syncRequest, userId);
         return AppUtil.versionedResponse(Constants.API_ADMIN_PARENT_PATH_SYNC, result);
     }
 
-    private SyncParentPathResponse computeAndSyncParentPaths(String rootOrgId, SyncParentPathRequest request, String userId) {
+    /** The whole {@code "request"} envelope is optional on this endpoint; a missing envelope or a missing inner body both fall back to every flag's documented default. */
+    private static SyncParentPathRequestBody resolveSyncRequestBody(ApiRequest<SyncParentPathRequestBody> request) {
+        return request == null ? new SyncParentPathRequestBody()
+                : Objects.requireNonNullElseGet(request.getRequest(), SyncParentPathRequestBody::new);
+    }
+
+    private SyncParentPathResponse computeAndSyncParentPaths(String rootOrgId, SyncParentPathRequestBody request, String userId) {
         long startTime = System.currentTimeMillis();
         boolean includeChildren = request.getIncludeChildren() == null || request.getIncludeChildren();
         boolean onlyLeaves = Boolean.TRUE.equals(request.getOnlyLeaves());

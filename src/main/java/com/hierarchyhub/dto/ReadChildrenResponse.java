@@ -16,7 +16,12 @@ public class ReadChildrenResponse {
     private final boolean idle;
     private final int childCount;
     private final int level;
+    private final String levelName;
     private final List<ChildOrgSummary> associations;
+    /** Only present when the caller asked for {@code levelRequired} - see {@link #maxAllowedLevel}/{@link #levels}. */
+    private final List<HierarchyLevelItem> levels;
+    private final Integer maxCreatedLevel;
+    private final Integer maxAllowedLevel;
     private final int limit;
     private final boolean hasMore;
     private final String nextCursor;

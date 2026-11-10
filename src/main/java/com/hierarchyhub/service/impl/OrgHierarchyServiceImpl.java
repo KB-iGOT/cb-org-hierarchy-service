@@ -2,29 +2,31 @@ package com.hierarchyhub.service.impl;
 
 import com.hierarchyhub.dto.Constants;
 import com.hierarchyhub.config.OrgHierarchyTransactionConfig;
+import com.hierarchyhub.dto.ApiRequest;
 import com.hierarchyhub.dto.AssociationRef;
 import com.hierarchyhub.dto.BatchLinkExecutionResult;
 import com.hierarchyhub.dto.BatchOperationResponse;
 import com.hierarchyhub.dto.ChildOrgSummary;
 import com.hierarchyhub.dto.HierarchyEvent;
 import com.hierarchyhub.dto.HierarchyResponse;
-import com.hierarchyhub.dto.LinkOrgRequest;
+import com.hierarchyhub.dto.LinkOrgRequestBody;
 import com.hierarchyhub.dto.OrgLinkErrorDetail;
-import com.hierarchyhub.dto.MoveOrgRequest;
+import com.hierarchyhub.dto.MoveOrgRequestBody;
 import com.hierarchyhub.dto.MoveOrgResponse;
 import com.hierarchyhub.dto.OrgTreeNode;
-import com.hierarchyhub.dto.ReadChildrenRequest;
 import com.hierarchyhub.dto.ReadChildrenRequestBody;
 import com.hierarchyhub.dto.ReadChildrenResponse;
-import com.hierarchyhub.dto.UnlinkOrgRequest;
+import com.hierarchyhub.dto.UnlinkOrgRequestBody;
 import com.hierarchyhub.exception.ErrorCode;
 import com.hierarchyhub.exception.ServiceException;
 import com.hierarchyhub.model.ApiResponse;
+import com.hierarchyhub.model.HierarchyLevelRecord;
 import com.hierarchyhub.model.OrganisationRecord;
 import com.hierarchyhub.model.OrgHierarchyDto;
 import com.hierarchyhub.model.OrgHierarchyDtoWithDepth;
 import com.hierarchyhub.repository.OrgHierarchyRepository;
 import com.hierarchyhub.service.HierarchyEventPublisher;
+import com.hierarchyhub.service.OrgHierarchyLevelService;
 import com.hierarchyhub.service.OrgHierarchyService;
 import com.hierarchyhub.util.AppUtil;
 import com.hierarchyhub.util.AuthUtils;
@@ -62,22 +64,25 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
     private final AuthUtils authUtils;
     private final CassandraUtils cassandraUtils;
     private final HierarchyEventPublisher hierarchyEventPublisher;
+    private final OrgHierarchyLevelService orgHierarchyLevelService;
     private final int maxDepth;
 
     public OrgHierarchyServiceImpl(OrgHierarchyRepository orgHierarchyRepository, OrgHierarchyValidator orgHierarchyValidator,
                                     AuthUtils authUtils, CassandraUtils cassandraUtils, HierarchyEventPublisher hierarchyEventPublisher,
+                                    OrgHierarchyLevelService orgHierarchyLevelService,
                                     @Value("${org-hierarchy.max-depth}") int maxDepth) {
         this.orgHierarchyRepository = orgHierarchyRepository;
         this.orgHierarchyValidator = orgHierarchyValidator;
         this.authUtils = authUtils;
         this.cassandraUtils = cassandraUtils;
         this.hierarchyEventPublisher = hierarchyEventPublisher;
+        this.orgHierarchyLevelService = orgHierarchyLevelService;
         this.maxDepth = maxDepth;
     }
 
     @Override
     @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
-    public ApiResponse linkOrgToHierarchy(LinkOrgRequest request, String accessToken) {
+    public ApiResponse linkOrgToHierarchy(ApiRequest<LinkOrgRequestBody> request, String accessToken) {
         String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
 
         String parentOrgId = request.getRequest().getParentOrgId();
@@ -141,6 +146,10 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         if (!orgHierarchyRepository.findById(parentId).isPresent()) {
             orgHierarchyValidator.requireMinistryOrStateRoot(parentId, parentRecord);
             orgHierarchyRepository.createRoot(parentId, nameOrId(parentRecord), userId);
+            orgHierarchyLevelService.ensureDefaultLevelsProvisioned(parentId, userId);
+        } else if (orgHierarchyValidator.isMinistryOrStateRoot(parentRecord)) {
+            // safe idempotency: a root created before the levels engine shipped may not have any rows yet
+            orgHierarchyLevelService.ensureDefaultLevelsProvisioned(parentId, userId);
         }
         return parentRecord;
     }
@@ -210,7 +219,7 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
 
     @Override
     @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
-    public ApiResponse moveOrgInHierarchy(MoveOrgRequest request, String accessToken) {
+    public ApiResponse moveOrgInHierarchy(ApiRequest<MoveOrgRequestBody> request, String accessToken) {
         String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
         String orgId = request.getRequest().getOrgId();
         String newParentId = request.getRequest().getNewParentOrgId();
@@ -255,7 +264,7 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
 
     @Override
     @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
-    public ApiResponse unlinkOrgFromHierarchy(UnlinkOrgRequest request, String accessToken) {
+    public ApiResponse unlinkOrgFromHierarchy(ApiRequest<UnlinkOrgRequestBody> request, String accessToken) {
         String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
         String orgId = request.getRequest().getOrgId();
 
@@ -317,7 +326,7 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
 
     @Override
     @Transactional(value = OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER, readOnly = true)
-    public ApiResponse readOrgChildren(String orgId, ReadChildrenRequest request, String accessToken) {
+    public ApiResponse readOrgChildren(String orgId, ApiRequest<ReadChildrenRequestBody> request, String accessToken) {
         authUtils.validateCallerAuthenticationAndFetchUserId(accessToken);
         OrgHierarchyDto root = orgHierarchyRepository.findById(orgId)
                 .orElseThrow(() -> new ServiceException(ErrorCode.ORG_NOT_FOUND, "Org " + orgId + " is not in the hierarchy"));
@@ -325,6 +334,7 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
                 ? new ReadChildrenRequestBody() : request.getRequest();
         int limit = body.limitOrDefault();
         boolean withDescendantCounts = body.countDescendantsOrDefault();
+        boolean levelRequired = body.levelRequiredOrDefault();
         String query = AppUtil.isBlank(body.getQuery()) ? null : body.getQuery().trim();
         String queryPattern = query == null ? null : AppUtil.likeContainsPattern(query);
         // explicit depth always wins; otherwise a search reaches the whole subtree (it has to, to find a match
@@ -333,7 +343,9 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         int depthLimit = body.getDepth() != null ? Math.min(body.getDepth(), maxDepth) : query != null ? maxDepth : 1;
         // the org's position in the whole hierarchy (an L0 root is level 1) - not relative to this call's orgId, so
         // calling /read on a deeply-nested org still reports that org's real, absolute level
-        int rootLevel = orgHierarchyRepository.chainUp(orgId).size();
+        List<String> ancestorChain = orgHierarchyRepository.chainUp(orgId);
+        int rootLevel = ancestorChain.size();
+        Map<Integer, HierarchyLevelRecord> levels = orgHierarchyLevelService.levelMapFor(rootOrgIdOf(ancestorChain));
 
         List<OrgHierarchyDtoWithDepth> page;
         if (body.getOffset() != null) {
@@ -347,24 +359,32 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         boolean hasMore = page.size() > limit;
         List<OrgHierarchyDtoWithDepth> items = hasMore ? page.subList(0, limit) : page;
 
+        int deepestLevelReached = rootLevel;
         List<ChildOrgSummary> summaries = new ArrayList<>();
         for (OrgHierarchyDtoWithDepth item : items) {
             OrgHierarchyDto node = item.node();
             Integer descendantCount = withDescendantCounts ? orgHierarchyRepository.countDescendants(node.id()) : null;
+            int childLevel = rootLevel + item.depth();
+            deepestLevelReached = Math.max(deepestLevelReached, childLevel);
             summaries.add(new ChildOrgSummary(node.id(), node.name(), node.idle(), node.childCount(), descendantCount,
-                    rootLevel + item.depth()));
+                    childLevel, orgHierarchyLevelService.levelNameOf(levels, childLevel)));
         }
         // a cursor only makes sense when paging by cursor; an offset-paging caller computes its own next offset
         String nextCursor = hasMore && body.getOffset() == null
                 ? AppUtil.encodeCursor(lastOf(items).node().name(), lastOf(items).node().id()) : null;
         ReadChildrenResponse result = new ReadChildrenResponse(root.id(), root.name(), root.idle(), root.childCount(),
-                rootLevel, summaries, limit, hasMore, nextCursor);
+                rootLevel, orgHierarchyLevelService.levelNameOf(levels, rootLevel), summaries,
+                // the blueprint starts at the queried org's own level - e.g. a level-2 org reports L2..L10, never L1
+                levelRequired ? orgHierarchyLevelService.levelsBlueprint(levels, rootLevel) : null,
+                levelRequired ? deepestLevelReached : null,
+                levelRequired ? Constants.MAX_ALLOWED_LEVEL : null,
+                limit, hasMore, nextCursor);
         return versionedResponse(Constants.API_READ, result);
     }
 
     @Override
     @Transactional(value = OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER, readOnly = true)
-    public ApiResponse readOrgHierarchy(String orgId, Integer depth, String accessToken) {
+    public ApiResponse readOrgHierarchy(String orgId, Integer depth, boolean levelRequired, String accessToken) {
         authUtils.validateCallerAuthenticationAndFetchUserId(accessToken);
         orgHierarchyValidator.requireExisting(orgHierarchyRepository.findById(orgId).isPresent(), "Org " + orgId + " is not in the hierarchy");
 
@@ -379,21 +399,36 @@ public class OrgHierarchyServiceImpl implements OrgHierarchyService {
         }
         // the org's own absolute level in the whole hierarchy (an L0 root is level 1), so a /complete call on a
         // deeply-nested org still reports its real level, not 1
-        int rootLevel = orgHierarchyRepository.chainUp(orgId).size();
-        OrgTreeNode tree = buildTree(byId.get(orgId), childrenByParent, depth, 1, rootLevel);
-        HierarchyResponse result = new HierarchyResponse(tree, countNodes(tree));
+        List<String> ancestorChain = orgHierarchyRepository.chainUp(orgId);
+        int rootLevel = ancestorChain.size();
+        Map<Integer, HierarchyLevelRecord> levels = orgHierarchyLevelService.levelMapFor(rootOrgIdOf(ancestorChain));
+
+        OrgTreeNode tree = buildTree(byId.get(orgId), childrenByParent, depth, 1, rootLevel, levels);
+        // levelRequired defaults to true for /complete, unlike /read's default-false - see read-and-complete-hierarchy-spec.md section 6.1,
+        // resolved by CompleteHierarchyRequestParams#levelRequiredOrDefault before reaching this service method
+        HierarchyResponse result = new HierarchyResponse(tree, countNodes(tree),
+                // the blueprint starts at the queried org's own level - e.g. a level-2 org reports L2..L10, never L1
+                levelRequired ? orgHierarchyLevelService.levelsBlueprint(levels, rootLevel) : null,
+                levelRequired ? orgHierarchyLevelService.maxLevelIn(tree) : null,
+                levelRequired ? Constants.MAX_ALLOWED_LEVEL : null);
         return versionedResponse(Constants.API_HIERARCHY, result);
     }
 
-    private static OrgTreeNode buildTree(OrgHierarchyDto node, Map<String, List<OrgHierarchyDto>> childrenByParent, Integer depthLimit,
-                                          int currentDepth, int level) {
+    private OrgTreeNode buildTree(OrgHierarchyDto node, Map<String, List<OrgHierarchyDto>> childrenByParent, Integer depthLimit,
+                                   int currentDepth, int level, Map<Integer, HierarchyLevelRecord> levels) {
         List<OrgTreeNode> associations = new ArrayList<>();
         if (depthLimit == null || currentDepth < depthLimit) {
             for (OrgHierarchyDto child : childrenByParent.getOrDefault(node.id(), Collections.emptyList())) {
-                associations.add(buildTree(child, childrenByParent, depthLimit, currentDepth + 1, level + 1));
+                associations.add(buildTree(child, childrenByParent, depthLimit, currentDepth + 1, level + 1, levels));
             }
         }
-        return new OrgTreeNode(node.id(), node.name(), node.idle(), node.childCount(), level, associations);
+        return new OrgTreeNode(node.id(), node.name(), node.idle(), node.childCount(), level,
+                orgHierarchyLevelService.levelNameOf(levels, level), associations);
+    }
+
+    /** {@code rootOrgIdOf(chainUp(orgId))} - {@code chainUp} returns {@code orgId} itself first, the L0 root last. */
+    private static String rootOrgIdOf(List<String> ancestorChainSelfFirst) {
+        return ancestorChainSelfFirst.get(ancestorChainSelfFirst.size() - 1);
     }
 
     private static int countNodes(OrgTreeNode node) {

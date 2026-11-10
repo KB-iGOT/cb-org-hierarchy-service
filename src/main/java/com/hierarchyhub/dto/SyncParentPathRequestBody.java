@@ -5,12 +5,12 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/** {@code POST /admin/parent-path/sync/{rootOrgId}} body - every field optional, resolved against its documented default in the service layer. */
+/** {@code POST /admin/parent-path/sync/{rootOrgId}}'s {@code "request"} body - every field optional, resolved against its documented default in the service layer. */
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-public class SyncParentPathRequest {
+public class SyncParentPathRequestBody {
 
     /** Whether to cascade down to all sub-children recursively. Defaults to {@code true}. */
     private Boolean includeChildren;

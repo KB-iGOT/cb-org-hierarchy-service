@@ -20,7 +20,7 @@ public class ReadChildrenRequestBody {
     @Min(value = 0, message = "offset must be at least 0")
     private Integer offset;
 
-    /** Whether to compute each child's descendant count; defaults to true. */
+    /** Whether to compute each child's descendant count; defaults to false. */
     private Boolean countDescendants;
 
     @Min(value = 1, message = "depth must be at least 1")
@@ -28,11 +28,18 @@ public class ReadChildrenRequestBody {
 
     private String query;
 
+    /** Whether to include the level blueprint array (and {@code maxCreatedLevel}/{@code maxAllowedLevel}) in the response; defaults to false. */
+    private Boolean levelRequired;
+
     public int limitOrDefault() {
         return limit == null ? DEFAULT_LIMIT : limit;
     }
 
     public boolean countDescendantsOrDefault() {
-        return countDescendants == null || countDescendants;
+        return Boolean.TRUE.equals(countDescendants);
+    }
+
+    public boolean levelRequiredOrDefault() {
+        return Boolean.TRUE.equals(levelRequired);
     }
 }

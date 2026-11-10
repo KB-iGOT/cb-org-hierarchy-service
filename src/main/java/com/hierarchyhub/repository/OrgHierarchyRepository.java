@@ -128,14 +128,14 @@ public class OrgHierarchyRepository {
     /** Inserts a new child row under {@code parentId}; empty when the id already exists (another request created it first). */
     public Optional<OrgHierarchyDto> createMapped(String id, String name, String parentId, String userId) {
         List<String> inserted = jdbc.queryForList(OrgHierarchySql.CREATE_MAPPED,
-                params("id", id).addValue("name", name).addValue("parent", parentId).addValue("by", userId), String.class);
+                params("id", id).addValue("name", name).addValue("parent", parentId).addValue(Constants.PARAM_UPDATED_BY, userId), String.class);
         return inserted.isEmpty() ? Optional.empty() : findById(id);
     }
 
     /** Creates a brand-new hierarchy root (no parent of its own); empty if the id already exists. */
     public Optional<OrgHierarchyDto> createRoot(String id, String name, String userId) {
         List<String> inserted = jdbc.queryForList(OrgHierarchySql.CREATE_MAPPED,
-                params("id", id).addValue("name", name).addValue("parent", null, Types.VARCHAR).addValue("by", userId), String.class);
+                params("id", id).addValue("name", name).addValue("parent", null, Types.VARCHAR).addValue(Constants.PARAM_UPDATED_BY, userId), String.class);
         return inserted.isEmpty() ? Optional.empty() : findById(id);
     }
 
@@ -143,31 +143,31 @@ public class OrgHierarchyRepository {
     public void batchInsertMapped(List<String> ids, List<String> names, String parentId, String userId) {
         SqlParameterSource[] batchParams = new SqlParameterSource[ids.size()];
         for (int i = 0; i < ids.size(); i++) {
-            batchParams[i] = params("id", ids.get(i)).addValue("name", names.get(i)).addValue("parent", parentId).addValue("by", userId);
+            batchParams[i] = params("id", ids.get(i)).addValue("name", names.get(i)).addValue("parent", parentId).addValue(Constants.PARAM_UPDATED_BY, userId);
         }
         jdbc.batchUpdate(OrgHierarchySql.CREATE_MAPPED, batchParams);
     }
 
     public void setParent(String id, String parentId, String userId) {
-        jdbc.update(OrgHierarchySql.SET_PARENT, params("id", id).addValue("parent", parentId).addValue("by", userId));
+        jdbc.update(OrgHierarchySql.SET_PARENT, params("id", id).addValue("parent", parentId).addValue(Constants.PARAM_UPDATED_BY, userId));
     }
 
     /** Re-parents many already-mapped children onto {@code parentId} in one JDBC batch. */
     public void batchSetParent(List<String> ids, String parentId, String userId) {
         SqlParameterSource[] batchParams = new SqlParameterSource[ids.size()];
         for (int i = 0; i < ids.size(); i++) {
-            batchParams[i] = params("id", ids.get(i)).addValue("parent", parentId).addValue("by", userId);
+            batchParams[i] = params("id", ids.get(i)).addValue("parent", parentId).addValue(Constants.PARAM_UPDATED_BY, userId);
         }
         jdbc.batchUpdate(OrgHierarchySql.SET_PARENT, batchParams);
     }
 
     public void unlinkRow(String id, String userId) {
-        jdbc.update(OrgHierarchySql.UNLINK, params("id", id).addValue("by", userId));
+        jdbc.update(OrgHierarchySql.UNLINK, params("id", id).addValue(Constants.PARAM_UPDATED_BY, userId));
     }
 
     /** Unlinks every row in {@code ids} (a whole subtree, root included) in one statement - see {@link OrgHierarchySql#CLEAR_SUBTREE}. */
     public void clearSubtree(Collection<String> ids, String userId) {
-        jdbc.update(OrgHierarchySql.CLEAR_SUBTREE, idsParam(ids).addValue("by", userId));
+        jdbc.update(OrgHierarchySql.CLEAR_SUBTREE, idsParam(ids).addValue(Constants.PARAM_UPDATED_BY, userId));
     }
 
     public void incrementChildCount(String parentId) {

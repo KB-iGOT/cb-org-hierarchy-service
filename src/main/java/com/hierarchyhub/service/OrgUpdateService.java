@@ -1,6 +1,7 @@
 package com.hierarchyhub.service;
 
-import com.hierarchyhub.dto.SyncParentPathRequest;
+import com.hierarchyhub.dto.ApiRequest;
+import com.hierarchyhub.dto.SyncParentPathRequestBody;
 import com.hierarchyhub.dto.SyncParentPathResponse;
 import com.hierarchyhub.model.ApiResponse;
 
@@ -17,5 +18,5 @@ public interface OrgUpdateService {
     ApiResponse repairOrgParentPath(String orgId, String accessToken);
 
     /** Authorizes the caller, runs a deep subtree {@code parentPathId} sync from {@code rootOrgId} per {@code request}'s flags, and returns the versioned API envelope. */
-    ApiResponse syncSubtreeParentPaths(String rootOrgId, SyncParentPathRequest request, String accessToken);
+    ApiResponse syncSubtreeParentPaths(String rootOrgId, ApiRequest<SyncParentPathRequestBody> request, String accessToken);
 }

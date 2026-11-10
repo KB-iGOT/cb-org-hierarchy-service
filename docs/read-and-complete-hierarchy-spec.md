@@ -23,7 +23,7 @@ The hierarchy query layer in `cb-org-hierarchy-service` provides two complementa
 
 ### Key Innovation: Unified Level Metadata with Structural Specialization
 Both APIs share the exact same level intelligence fields, while respecting their structural specialization:
-* **Common Fields**: Both endpoints report `level`, `levelName`, `currentMaxLevel`, `maxAllowedLevel`, and the 10-level blueprint (`levels` array).
+* **Common Fields**: Both endpoints report `level`, `levelName`, `maxCreatedLevel`, `maxAllowedLevel`, and the 10-level blueprint (`levels` array).
 * **Structural Difference**:
   * `/read` presents children as a **flat list** (`ChildOrgSummary`).
   * `/complete` presents children as a **recursively nested tree** (`OrgTreeNode`).
@@ -42,9 +42,17 @@ Both APIs share the exact same level intelligence fields, while respecting their
 | **Node `level` Field** | Populated on root and each child | Populated on root and every nested node |
 | **Node `levelName` Field** | Populated on root and each child | Populated on root and every nested node |
 | **`levels` Blueprint Array** | Included when `"levelRequired": true` | Included when `?levelRequired=true` (or default) |
-| **`currentMaxLevel`** | Deepest level reached under queried org | Deepest level reached in the returned tree |
+| **`maxCreatedLevel`** | Deepest level reached under queried org | Deepest level reached in the returned tree |
 | **`maxAllowedLevel`** | Hard boundary: `10` | Hard boundary: `10` |
 | **Average Latency** | **10 ms – 20 ms** (fetching 50 items) | **25 ms – 40 ms** (fetching 1,000 nodes) |
+
+> **Dynamic `levels` blueprint**: the array always starts at the *queried org's own level*, not always `L1`. Calling either
+> endpoint on a level-2 org returns `levels` covering `2..10` only - levels above the queried org are never shown, since
+> they describe ancestors the caller didn't ask about. A level-1 (L0 root) query still sees the full `1..10` blueprint.
+
+> **`countDescendants` on `/read`**: defaults to `false` - a caller only pays for the recursive descendant-count query
+> when it explicitly sends `"countDescendants": true`; the field itself is omitted from each `ChildOrgSummary` (not
+> `null`) whenever it wasn't requested.
 
 ---
 
@@ -206,7 +214,7 @@ ORDER BY level ASC;
       { "level": 9, "name": "L9", "description": "LevelNine" },
       { "level": 10, "name": "L10", "description": "LevelTen" }
     ],
-    "currentMaxLevel": 4,
+    "maxCreatedLevel": 4,
     "maxAllowedLevel": 10,
     "limit": 50,
     "hasMore": false
@@ -222,7 +230,7 @@ ORDER BY level ASC;
 
 * **Method**: `GET /org/v2/hierarchy/{orgId}/complete`
 * **Header**: `x-authenticated-user-token: <token>` (Required)
-* **Query Parameters**:
+* **Query Parameters** (bound as one `CompleteHierarchyRequestParams` object, so a future param never grows the controller's own method signature):
   * `depth` (`Integer`, optional): Maximum hops to traverse down (default: whole tree up to max depth).
   * `levelRequired` (`Boolean`, optional, default `true`): When `true`, includes the `levels` array in the response.
 
@@ -308,7 +316,7 @@ Notice that in `/complete`, `associations` is **recursively nested** where each 
       { "level": 9, "name": "L9", "description": "LevelNine" },
       { "level": 10, "name": "L10", "description": "LevelTen" }
     ],
-    "currentMaxLevel": 4,
+    "maxCreatedLevel": 4,
     "maxAllowedLevel": 10
   }
 }
@@ -380,9 +388,9 @@ public class HierarchyResponse {
     @JsonUnwrapped
     private final OrgTreeNode org;
     private final int count;
-    private final Integer currentMaxLevel;
+    private final List<HierarchyLevelItem> levels;
+    private final Integer maxCreatedLevel;
     private final Integer maxAllowedLevel;
-    private final List<HierarchyLevelDto> levels;
 }
 ```
 

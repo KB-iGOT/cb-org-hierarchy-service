@@ -15,4 +15,5 @@ public class ChildOrgSummary {
     private final int childCount;
     private final Integer descendantCount;
     private final int level;
+    private final String levelName;
 }

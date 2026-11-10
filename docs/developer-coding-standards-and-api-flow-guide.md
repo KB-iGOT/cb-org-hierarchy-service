@@ -61,61 +61,47 @@ flowchart TD
        * **Reusability**: Sub-structures and list items can be directly reused across multiple requests, responses, batch services, and repository mappers without awkward compound type names (e.g., `HierarchyLevelItem` can be reused directly in GET responses and repository batch updates).
        * **Clean Tooling & Serialization**: Avoids synthetic compiler artifacts (`Outer$Inner.class`) and ensures clean Jackson deserialization, Swagger/OpenAPI schema generation, and clean mock data fixtures in unit tests.
        * **Codebase Uniformity**: Follows the exact established project convention:
-         * `LinkOrgRequest.java` $\rightarrow$ `LinkOrgRequestBody.java` $\rightarrow$ `AssociationRef.java`
-         * `MoveOrgRequest.java` $\rightarrow$ `MoveOrgRequestBody.java`
-         * `UnlinkOrgRequest.java` $\rightarrow$ `UnlinkOrgRequestBody.java`
-         * `ReadChildrenRequest.java` $\rightarrow$ `ReadChildrenRequestBody.java`
+         * `ApiRequest<LinkOrgRequestBody>` $\rightarrow$ `LinkOrgRequestBody.java` $\rightarrow$ `AssociationRef.java`
+         * `ApiRequest<MoveOrgRequestBody>` $\rightarrow$ `MoveOrgRequestBody.java`
+         * `ApiRequest<UnlinkOrgRequestBody>` $\rightarrow$ `UnlinkOrgRequestBody.java`
+         * `ApiRequest<ReadChildrenRequestBody>` $\rightarrow$ `ReadChildrenRequestBody.java`
   2. **Pure POJOs (Zero Business Logic & Zero Factory Helper Methods)**:
      * DTOs and event models (e.g., `HierarchyEvent`) must contain **strictly fields, constructors, getters, setters, and toString**.
      * **Never** add business logic, domain methods, or static event creation factory methods (such as `linkEvent()`, `moveEvent()`, `createX()`) inside DTO or Event classes.
      * All entity mapping, event creation, and field population logic belong strictly in the **Service or ServiceImpl layer**.
-  3. **Envelope Pattern (2 Classes) vs. Flat POJO (1 Class)**:
-     * **Pattern A: Standard Public Sunbird APIs (2 Standalone Classes)**: When an API must adhere to Sunbird's public request envelope `{ "request": { ... } }`, create two standalone top-level classes (`XRequest` outer wrapper holding `@Valid private XRequestBody request;` and `XRequestBody` holding the payload).
-     * **Pattern B: Direct / Internal / Admin APIs (1 Standalone Class)**: When an API is driven by path variables (e.g., `/sync/{rootOrgId}`) or has flat/optional operational flags (e.g., `SyncParentPathRequest`), use a **single clean top-level POJO** without an unnecessary outer envelope class.
+  3. **Every Request Body Starts With `"request"` - One Shared Generic Envelope, Not a Bespoke Class Per Endpoint**:
+     * **Rule**: every write endpoint's JSON body is `{ "request": { ... } }`, no exceptions - including single-resource,
+       path-variable-driven writes (`PATCH /levels/{rootOrgId}`, `POST /admin/.../sync/{rootOrgId}`). There is no
+       "flat body, no envelope" pattern in this codebase; a prior version of this doc described one (Pattern B) and
+       that has been retired - every endpoint now follows what it called Pattern A.
+     * **One generic wrapper, not N bespoke ones**: instead of a near-identical `XRequest` outer class per endpoint
+       (`LinkOrgRequest`, `MoveOrgRequest`, `UnlinkOrgRequest`, ...), every endpoint reuses one generic
+       `com.hierarchyhub.dto.ApiRequest<T>`:
+       ```java
+       @Getter
+       @Setter
+       @NoArgsConstructor
+       public class ApiRequest<T> {
+           @NotNull(message = "request is required")
+           @Valid
+           private T request;
+       }
+       ```
+       A controller binds `@Valid @RequestBody ApiRequest<XRequestBody> request`; Spring/Jackson resolve the generic
+       type from the controller method's own signature (the same mechanism that already works for a generic response
+       type), and Jakarta validation cascades into the actual runtime value of `request`, so `@Valid` on the generic
+       field validates `XRequestBody`'s own constraints exactly as it would through a bespoke wrapper class. Only the
+       endpoint-specific body class (`XRequestBody`) is still written per endpoint - the outer envelope class is not.
   4. **Lombok & Constructors**: Always use `@Getter`, `@Setter`, `@NoArgsConstructor`, `@AllArgsConstructor`.
   5. **JSON Serialization**: Use Jackson's `@JsonInclude(JsonInclude.Include.NON_NULL)` to omit empty fields where applicable.
   6. **Strict Jakarta Validation**: Always annotate fields with proper constraints (`@NotBlank`, `@NotNull`, `@NotEmpty`, `@Min`, `@Max`, `@Valid`). Always put `@Valid` on nested object and collection references.
-* **Standard Pattern (3 Separate Top-Level Files)**:
-  ```java
-  // File 1: com/hierarchyhub/dto/UpdateHierarchyLevelsRequest.java
-  @Getter
-  @Setter
-  @NoArgsConstructor
-  @AllArgsConstructor
-  public class UpdateHierarchyLevelsRequest {
-      @NotNull(message = "request is required")
-      @Valid
-      private UpdateHierarchyLevelsRequestBody request;
-  }
-
-  // File 2: com/hierarchyhub/dto/UpdateHierarchyLevelsRequestBody.java
-  @Getter
-  @Setter
-  @NoArgsConstructor
-  @AllArgsConstructor
-  public class UpdateHierarchyLevelsRequestBody {
-      @NotEmpty(message = "levels list must not be empty")
-      @Valid
-      private List<HierarchyLevelItem> levels;
-  }
-
-  // File 3: com/hierarchyhub/dto/HierarchyLevelItem.java
-  @Getter
-  @Setter
-  @NoArgsConstructor
-  @AllArgsConstructor
-  public class HierarchyLevelItem {
-      @NotNull(message = "level is required")
-      @Min(value = 1, message = "level must be between 1 and 10")
-      @Max(value = 10, message = "level must be between 1 and 10")
-      private Integer level;
-
-      @NotBlank(message = "name is required")
-      private String name;
-
-      private String description;
-  }
-  ```
+* **Example**: `ApiRequest<LinkOrgRequestBody>` $\rightarrow$ `LinkOrgRequestBody` $\rightarrow$ `AssociationRef`.
+  `PATCH /org/v2/hierarchy/levels/{rootOrgId}` follows the same shape: `ApiRequest<UpdateHierarchyLevelsRequestBody>`
+  $\rightarrow$ `UpdateHierarchyLevelsRequestBody` $\rightarrow$ `HierarchyLevelItem`. `HierarchyLevelItem` is also
+  reused, unchanged, as the response-side row of a `levels` blueprint array - no separate response-only twin class
+  for the same shape. `POST /admin/.../sync/{rootOrgId}` (`ApiRequest<SyncParentPathRequestBody>`) is driven by a
+  path variable and has only flat, optional operational flags inside its body, but still takes the same envelope -
+  "single-resource" and "path-variable-driven" no longer exempt an endpoint from it.
 
 ---
 
@@ -292,17 +278,18 @@ When building a new API (e.g., `PATCH /org/v2/hierarchy/levels/{rootOrgId}`), fo
 
 Let us trace how the checklist is applied to create `PATCH /org/v2/hierarchy/levels/{rootOrgId}`:
 
-### Step 1: DTO Definitions (3 Standalone Top-Level Classes in `com.hierarchyhub.dto`)
+### Step 1: DTO Definitions (1 Shared Generic Envelope + 2 Endpoint Classes in `com.hierarchyhub.dto`)
 
-In accordance with project standards, each component of the request is an independent top-level class:
+This PATCH keeps the `{"request": {...}}` envelope, matching every other write endpoint in this controller, even
+though it addresses a single path-variable resource - but reuses the shared `ApiRequest<T>` envelope instead of
+declaring its own bespoke outer wrapper class:
 
-**1. Outer Request Envelope (`com.hierarchyhub.dto.UpdateHierarchyLevelsRequest`)**:
+**1. Generic Envelope (`com.hierarchyhub.dto.ApiRequest`)** - already defined once, shared by every write endpoint:
 ```java
 package com.hierarchyhub.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotNull;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -310,14 +297,15 @@ import lombok.Setter;
 @Getter
 @Setter
 @NoArgsConstructor
-@AllArgsConstructor
-public class UpdateHierarchyLevelsRequest {
+public class ApiRequest<T> {
 
     @NotNull(message = "request is required")
     @Valid
-    private UpdateHierarchyLevelsRequestBody request;
+    private T request;
 }
 ```
+The controller binds `@Valid @RequestBody ApiRequest<UpdateHierarchyLevelsRequestBody> request` - no new outer class
+needed for this endpoint.
 
 **2. Request Body (`com.hierarchyhub.dto.UpdateHierarchyLevelsRequestBody`)**:
 ```java
@@ -325,7 +313,6 @@ package com.hierarchyhub.dto;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -335,7 +322,6 @@ import java.util.List;
 @Getter
 @Setter
 @NoArgsConstructor
-@AllArgsConstructor
 public class UpdateHierarchyLevelsRequestBody {
 
     @NotEmpty(message = "levels list must not be empty")
@@ -344,10 +330,12 @@ public class UpdateHierarchyLevelsRequestBody {
 }
 ```
 
-**3. Item Definition (`com.hierarchyhub.dto.HierarchyLevelItem`)**:
+**3. Item Definition (`com.hierarchyhub.dto.HierarchyLevelItem`)** - reused, unchanged, as both the request item and
+the response-side row of a `levels` blueprint array; no separate response-only `HierarchyLevelDto` twin:
 ```java
 package com.hierarchyhub.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -357,6 +345,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+@JsonInclude(JsonInclude.Include.NON_NULL)
 @Getter
 @Setter
 @NoArgsConstructor
@@ -403,7 +392,7 @@ public void batchUpdateLevels(String rootOrgId, List<HierarchyLevelItem> items, 
 ```java
 @Override
 @Transactional(OrgHierarchyTransactionConfig.ORG_HIERARCHY_TX_MANAGER)
-public ApiResponse updateHierarchyLevels(String rootOrgId, UpdateHierarchyLevelsRequest request, String accessToken) {
+public ApiResponse updateHierarchyLevels(String rootOrgId, ApiRequest<UpdateHierarchyLevelsRequestBody> request, String accessToken) {
     // 1. Authorize caller and fetch userId
     String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
 
@@ -432,7 +421,7 @@ public ApiResponse updateHierarchyLevels(String rootOrgId, UpdateHierarchyLevels
 @PatchMapping("/levels/{rootOrgId}")
 public ResponseEntity<ApiResponse> updateLevels(
         @PathVariable("rootOrgId") String rootOrgId,
-        @Valid @RequestBody UpdateHierarchyLevelsRequest request,
+        @Valid @RequestBody ApiRequest<UpdateHierarchyLevelsRequestBody> request,
         @RequestHeader(Constants.AUTH_TOKEN_HEADER) String accessToken) {
     ApiResponse response = service.updateHierarchyLevels(rootOrgId, request, accessToken);
     return new ResponseEntity<>(response, response.getResponseCode());

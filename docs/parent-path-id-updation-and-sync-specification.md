@@ -251,12 +251,18 @@ We propose **2 Primary APIs** (+ 1 optional system rebuild endpoint):
 
 ---
 
-### 4.2 DTO Simplification: Single Top-Level POJO
+### 4.2 DTO Simplification: One Generic Envelope, Shared Across Every Write Endpoint
 
-We have eliminated `SyncParentPathRequestBody.java`. The request is represented cleanly by a **single class**: `SyncParentPathRequest.java`.
+> **Updated (2026-11-10)**: every write endpoint in this service, including this one, wraps its body in the same
+> `{"request": {...}}` envelope - so this request keeps a `SyncParentPathRequestBody.java` after all (the flat-body
+> design above this note is superseded). Rather than a bespoke `SyncParentPathRequest` outer-wrapper class per
+> endpoint, every endpoint shares one generic `com.hierarchyhub.dto.ApiRequest<T>` (`@Valid private T request;`),
+> parameterized per endpoint (`ApiRequest<SyncParentPathRequestBody>` here) - see section 9.1 below and
+> `docs/developer-coding-standards-and-api-flow-guide.md` section 2.2.3.
 - `rootOrgId` is delivered in the URL as a `@PathVariable` (`/sync/{rootOrgId}`).
-- The request body contains flat optional flags (`includeChildren`, `onlyLeaves`, `forceUpdate`).
-- An empty body or query parameters (`?includeChildren=true&forceUpdate=false`) can also be passed.
+- `SyncParentPathRequestBody` still holds the same flat optional flags (`includeChildren`, `onlyLeaves`, `forceUpdate`).
+- The whole body is optional (`@RequestBody(required = false)`): omitting it entirely, or sending `{"request": {}}` /
+  `{"request": {"includeChildren": false}}` with only some flags set, all fall back to each flag's documented default.
 
 ---
 
@@ -295,12 +301,14 @@ We have eliminated `SyncParentPathRequestBody.java`. The request is represented 
 * **Endpoint**: `POST /org/v2/hierarchy/admin/parent-path/sync/{rootOrgId}`
 * **HTTP Method**: `POST`
 * **Headers**: `x-authenticated-user-token: <JWT>`
-* **Request Body (Single Flat Class, All Fields Optional)**:
+* **Request Body (wrapped in the standard `"request"` envelope, every field optional)**:
   ```json
   {
-    "includeChildren": true,
-    "onlyLeaves": false,
-    "forceUpdate": false
+    "request": {
+      "includeChildren": true,
+      "onlyLeaves": false,
+      "forceUpdate": false
+    }
   }
   ```
   - `includeChildren`: *(boolean, default: `true`)*. If `true`, walks the entire subtree down to all leaf nodes. If `false`, updates only `rootOrgId`.
@@ -617,11 +625,30 @@ public class OrgUpdateClient {
 
 ## 9. Layer-by-Layer Code Implementation Guide (Per Coding Standards)
 
-### 9.1 DTO Layer (`com.hierarchyhub.dto`) - Single Top-Level POJO
+### 9.1 DTO Layer (`com.hierarchyhub.dto`) - Shared Generic Envelope + One Body Class
 
-Single standalone class:
+#### File: Generic Envelope, Shared By Every Write Endpoint (`ApiRequest.java`)
+```java
+package com.hierarchyhub.dto;
 
-#### File: Request POJO (`SyncParentPathRequest.java`)
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotNull;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+@Getter
+@Setter
+@NoArgsConstructor
+public class ApiRequest<T> {
+
+    @NotNull(message = "request is required")
+    @Valid
+    private T request;
+}
+```
+
+#### File: Request Body (`SyncParentPathRequestBody.java`)
 ```java
 package com.hierarchyhub.dto;
 
@@ -634,18 +661,22 @@ import lombok.Setter;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
-public class SyncParentPathRequest {
+public class SyncParentPathRequestBody {
 
     /** Whether to cascade down to all sub-children recursively until the end. Default true. */
-    private Boolean includeChildren = true;
+    private Boolean includeChildren;
 
     /** If true, only updates organisations with zero children (child_count == 0). Default false. */
-    private Boolean onlyLeaves = false;
+    private Boolean onlyLeaves;
 
     /** If false, checks if parentPathId changed and skips external call if identical. Default false. */
-    private Boolean forceUpdate = false;
+    private Boolean forceUpdate;
 }
 ```
+
+The controller binds `@RequestBody(required = false) ApiRequest<SyncParentPathRequestBody> request`; the service
+resolves the whole envelope (or just its inner `request`) being absent to `new SyncParentPathRequestBody()`, so every
+flag still falls back to its documented default when the caller sends no body at all.
 
 #### File: Response Result POJO (`SyncParentPathResponse.java`)
 ```java
