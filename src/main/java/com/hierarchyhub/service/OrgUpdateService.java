@@ -9,6 +9,8 @@ public interface OrgUpdateService {
 
     SyncParentPathResponse resyncParentPath(String orgId, String userId);
 
+    SyncParentPathResponse resyncSingleOrgParentPath(String orgId, String userId);
+
     /** Authorizes the caller, repairs a single org's {@code parentPathId}, and returns the versioned API envelope. */
     ApiResponse repairOrgParentPath(String orgId, String accessToken);
 

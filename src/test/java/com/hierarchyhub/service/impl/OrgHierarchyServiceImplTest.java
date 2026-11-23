@@ -5,6 +5,7 @@ import com.hierarchyhub.dto.ApiRequest;
 import com.hierarchyhub.dto.Constants;
 import com.hierarchyhub.dto.HierarchyEvent;
 import com.hierarchyhub.dto.LinkOrgRequestBody;
+import com.hierarchyhub.dto.MoveOrgRequestBody;
 import com.hierarchyhub.dto.OrgHierarchySearchFilter;
 import com.hierarchyhub.dto.OrgHierarchySearchRequest;
 import com.hierarchyhub.dto.UnmappedOrgsFilter;
@@ -94,6 +95,52 @@ public class OrgHierarchyServiceImplTest {
         assertNull(event.getParentId());
         assertEquals(Constants.EVENT_TYPE_LINK, event.getEventType());
         assertEquals("user-1", event.getUserId());
+    }
+
+    // ------------------------------------------------------------------ moveOrgInHierarchy
+
+    @Test
+    public void moveOrgInHierarchyPublishesOneEventPerDescendantInsteadOfRelyingOnTheConsumerToWalkTheSubtree() {
+        when(authUtils.validateCallerAuthorizationAndFetchUserId("token")).thenReturn("user-1");
+        OrganisationRecord orgRecord = new OrganisationRecord("org-x", "SIFPSA", true, "root-1", 18, "Directorate", "ministry");
+        OrganisationRecord newParentRecord = new OrganisationRecord("new-parent", "DG Medical", true, "root-1", 18, "Directorate", "ministry");
+        when(cassandraUtils.fetchBatchOrganisationsFromTable(List.of("org-x", "new-parent")))
+                .thenReturn(Map.of("org-x", orgRecord, "new-parent", newParentRecord));
+        when(orgHierarchyRepository.findById("org-x"))
+                .thenReturn(Optional.of(new OrgHierarchyDto("org-x", "SIFPSA", "old-parent", false, 2)));
+        when(orgHierarchyRepository.findById("new-parent"))
+                .thenReturn(Optional.of(new OrgHierarchyDto("new-parent", "DG Medical", "root-1", false, 1)));
+        when(orgHierarchyRepository.chainUp("new-parent")).thenReturn(List.of("new-parent", "root-1"));
+        when(orgHierarchyRepository.findDescendantSubtreeOrgIds("org-x")).thenReturn(List.of("org-x", "child-a", "child-b"));
+        when(orgHierarchyValidator.hasParent(any())).thenReturn(true); // org-x already has "old-parent" - eligible to move, not a fresh /link case
+
+        MoveOrgRequestBody body = new MoveOrgRequestBody("org-x", "new-parent");
+        ApiRequest<MoveOrgRequestBody> request = new ApiRequest<>();
+        request.setRequest(body);
+
+        service.moveOrgInHierarchy(request, "token");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<HierarchyEvent>> eventsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(hierarchyEventPublisher, never()).publishAsync(any());
+        verify(hierarchyEventPublisher).publishBatchAsync(eventsCaptor.capture());
+        List<HierarchyEvent> events = eventsCaptor.getValue();
+        assertEquals(3, events.size()); // the moved org itself + its 2 descendants - never fans out via an executor inside the consumer
+
+        HierarchyEvent movedOrgEvent = events.get(0);
+        assertEquals("org-x", movedOrgEvent.getOrgId());
+        assertEquals("new-parent", movedOrgEvent.getParentId());
+        assertEquals("old-parent", movedOrgEvent.getPrevParentId());
+        assertEquals(Constants.EVENT_TYPE_MOVE, movedOrgEvent.getEventType());
+
+        HierarchyEvent descendantEventA = events.get(1);
+        assertEquals("child-a", descendantEventA.getOrgId());
+        assertNull(descendantEventA.getParentId());
+        assertEquals(Constants.EVENT_TYPE_MOVE, descendantEventA.getEventType());
+
+        HierarchyEvent descendantEventB = events.get(2);
+        assertEquals("child-b", descendantEventB.getOrgId());
+        assertEquals(Constants.EVENT_TYPE_MOVE, descendantEventB.getEventType());
     }
 
     // ------------------------------------------------------------------ searchOrgHierarchy

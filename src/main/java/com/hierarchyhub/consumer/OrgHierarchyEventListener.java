@@ -51,7 +51,7 @@ public class OrgHierarchyEventListener {
             String orgId = entry.getKey();
             String userId = StringUtils.hasText(entry.getValue()) ? entry.getValue() : Constants.SYSTEM_USER;
             try {
-                orgUpdateService.resyncParentPath(orgId, userId);
+                orgUpdateService.resyncSingleOrgParentPath(orgId, userId);
             } catch (Exception e) {
                 log.error("Projection failed for orgId={}: {}", orgId, e.getMessage(), e);
                 publishFailureAudit(orgId, e.getMessage());

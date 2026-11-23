@@ -47,8 +47,8 @@ public class OrgHierarchyEventListenerTest {
 
         listener.onBatch(records, acknowledgment);
 
-        verify(orgUpdateService, times(1)).resyncParentPath(eq("org-1"), anyString());
-        verify(orgUpdateService, times(1)).resyncParentPath(eq("org-2"), anyString());
+        verify(orgUpdateService, times(1)).resyncSingleOrgParentPath(eq("org-1"), anyString());
+        verify(orgUpdateService, times(1)).resyncSingleOrgParentPath(eq("org-2"), anyString());
         verify(acknowledgment).acknowledge();
     }
 
@@ -59,7 +59,7 @@ public class OrgHierarchyEventListenerTest {
 
         listener.onBatch(records, acknowledgment);
 
-        verify(orgUpdateService, times(1)).resyncParentPath("org-1", "user-42");
+        verify(orgUpdateService, times(1)).resyncSingleOrgParentPath("org-1", "user-42");
     }
 
     @Test
@@ -68,7 +68,7 @@ public class OrgHierarchyEventListenerTest {
 
         listener.onBatch(records, acknowledgment);
 
-        verify(orgUpdateService, times(1)).resyncParentPath("org-1", Constants.SYSTEM_USER);
+        verify(orgUpdateService, times(1)).resyncSingleOrgParentPath("org-1", Constants.SYSTEM_USER);
     }
 
     @Test
@@ -78,7 +78,7 @@ public class OrgHierarchyEventListenerTest {
 
         listener.onBatch(records, acknowledgment);
 
-        verify(orgUpdateService, times(1)).resyncParentPath(eq("org-9"), anyString());
+        verify(orgUpdateService, times(1)).resyncSingleOrgParentPath(eq("org-9"), anyString());
     }
 
     @Test
@@ -87,7 +87,7 @@ public class OrgHierarchyEventListenerTest {
 
         listener.onBatch(records, acknowledgment);
 
-        verify(orgUpdateService, never()).resyncParentPath(anyString(), anyString());
+        verify(orgUpdateService, never()).resyncSingleOrgParentPath(anyString(), anyString());
         verify(acknowledgment).acknowledge();
     }
 
@@ -95,13 +95,13 @@ public class OrgHierarchyEventListenerTest {
     public void doesNothingForAnEmptyBatch() {
         listener.onBatch(Collections.emptyList(), acknowledgment);
 
-        verify(orgUpdateService, never()).resyncParentPath(anyString(), anyString());
+        verify(orgUpdateService, never()).resyncSingleOrgParentPath(anyString(), anyString());
         verify(acknowledgment).acknowledge();
     }
 
     @Test
     public void publishesAFailureAuditWhenProjectionThrows() {
-        when(orgUpdateService.resyncParentPath(eq("org-1"), anyString())).thenThrow(new RuntimeException("db down"));
+        when(orgUpdateService.resyncSingleOrgParentPath(eq("org-1"), anyString())).thenThrow(new RuntimeException("db down"));
 
         listener.onBatch(Collections.singletonList(record("org-1", "{}")), acknowledgment);
 
@@ -116,7 +116,7 @@ public class OrgHierarchyEventListenerTest {
 
     @Test
     public void doesNotPublishAFailureAuditWhenProjectionSucceeds() {
-        when(orgUpdateService.resyncParentPath(eq("org-1"), anyString())).thenReturn(mock(SyncParentPathResponse.class));
+        when(orgUpdateService.resyncSingleOrgParentPath(eq("org-1"), anyString())).thenReturn(mock(SyncParentPathResponse.class));
 
         listener.onBatch(Collections.singletonList(record("org-1", "{}")), acknowledgment);
 

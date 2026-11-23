@@ -66,6 +66,11 @@ public class OrgUpdateServiceImpl implements OrgUpdateService {
     }
 
     @Override
+    public SyncParentPathResponse resyncSingleOrgParentPath(String orgId, String userId) {
+        return computeAndSyncParentPaths(orgId, new SyncParentPathRequestBody(false, false, true), userId);
+    }
+
+    @Override
     public ApiResponse repairOrgParentPath(String orgId, String accessToken) {
         String userId = authUtils.validateCallerAuthorizationAndFetchUserId(accessToken);
         SyncParentPathResponse result = resyncParentPath(orgId, userId);
@@ -103,7 +108,13 @@ public class OrgUpdateServiceImpl implements OrgUpdateService {
             // Leaf fast path: a single node is its own "subtree" - no recursive CTE needed.
             List<String> ancestorsRootFirst = ancestorsAboveAndIncluding(rootOrgId);
             String path = ParentPaths.of(Collections.emptyList(), ancestorsRootFirst, Constants.PATH_SEPARATOR);
-            String hierarchyLevel = hierarchyLevelName(ancestorsRootFirst.size() - 1);
+            // An empty ancestor chain (ParentPaths.of's own "0 or 1 node" case) means either a genuine L0 root
+            // (never had a parent, idle=false) or an org that was just unlinked/removed (idle=true per UNLINK/
+            // CLEAR_SUBTREE) - the latter has no real hierarchyLevel to report, same as its already-empty path.
+            boolean noRealAncestors = ancestorsRootFirst.size() <= 1;
+            String hierarchyLevel = (noRealAncestors && rootNode.idle())
+                    ? Constants.EMPTY_PARENT_PATH // same "" convention as parentPathId - this org has no real level, not "LevelZero"
+                    : hierarchyLevelName(ancestorsRootFirst.size() - 1);
             pendingPathUpdates = Collections.singletonList(new PendingPathUpdate(rootOrgId, path, hierarchyLevel));
             totalNodesInBranch = 1;
         } else {
@@ -201,6 +212,7 @@ public class OrgUpdateServiceImpl implements OrgUpdateService {
     private boolean updateParentPathId(PendingPathUpdate pendingPathUpdate, String userId) {
         Map<String, Object> requestBody = requestBody(pendingPathUpdate, userId);
         String targetUrl = externalServiceProperties.getLmsServiceHost() + externalServiceProperties.getLmsOrgUpdateEndpoint();
+        log.debug("Updating parentPathId for orgId={} to '{}' via {} with requestBody={}", pendingPathUpdate.orgId(), pendingPathUpdate.parentPathId(), targetUrl, requestBody);
         try {
             Map<String, Object> response = outboundRequestHandlerService.fetchResultUsingPatch(targetUrl, requestBody, Collections.emptyMap());
             if (Constants.RESPONSE_CODE_OK.equalsIgnoreCase(String.valueOf(response.get(Constants.RESPONSE_CODE_KEY)))) {
