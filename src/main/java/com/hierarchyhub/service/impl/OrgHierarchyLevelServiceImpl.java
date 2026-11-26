@@ -1,5 +1,6 @@
 package com.hierarchyhub.service.impl;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.hierarchyhub.config.OrgHierarchyTransactionConfig;
 import com.hierarchyhub.dto.ApiRequest;
 import com.hierarchyhub.dto.BatchOperationResponse;
@@ -20,9 +21,12 @@ import com.hierarchyhub.service.OrgHierarchyLevelService;
 import com.hierarchyhub.util.AppUtil;
 import com.hierarchyhub.util.AuthUtils;
 import com.hierarchyhub.util.CassandraUtils;
+import com.hierarchyhub.util.RedisCache;
 import com.hierarchyhub.validation.OrgHierarchyValidator;
+import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 
 @Service
@@ -47,14 +52,20 @@ public class OrgHierarchyLevelServiceImpl implements OrgHierarchyLevelService {
     private final OrgHierarchyValidator orgHierarchyValidator;
     private final CassandraUtils cassandraUtils;
     private final AuthUtils authUtils;
+    private final RedisCache redisCache;
+
+    @Value("${org-hierarchy.levels.cache-ttl-hours}")
+    private long levelsCacheTtlHours;
 
     public OrgHierarchyLevelServiceImpl(OrgHierarchyLevelRepository orgHierarchyLevelRepository, OrgHierarchyRepository orgHierarchyRepository,
-                                         OrgHierarchyValidator orgHierarchyValidator, CassandraUtils cassandraUtils, AuthUtils authUtils) {
+                                         OrgHierarchyValidator orgHierarchyValidator, CassandraUtils cassandraUtils, AuthUtils authUtils,
+                                         RedisCache redisCache) {
         this.orgHierarchyLevelRepository = orgHierarchyLevelRepository;
         this.orgHierarchyRepository = orgHierarchyRepository;
         this.orgHierarchyValidator = orgHierarchyValidator;
         this.cassandraUtils = cassandraUtils;
         this.authUtils = authUtils;
+        this.redisCache = redisCache;
     }
 
     @Override
@@ -75,6 +86,7 @@ public class OrgHierarchyLevelServiceImpl implements OrgHierarchyLevelService {
 
         List<HierarchyLevelItem> normalizedLevels = validateAndNormalizeLevels(request.getRequest().getLevels());
         orgHierarchyLevelRepository.upsertLevels(rootOrgId, normalizedLevels, userId);
+        redisCache.delete(getHierarchyLevelsCacheKey(rootOrgId));
         log.info("updateHierarchyLevels: Saved {} levels for rootOrgId={} by userId={}", normalizedLevels.size(), rootOrgId, userId);
 
         return AppUtil.versionedResponse(Constants.API_LEVELS_UPDATE, new BatchOperationResponse(Constants.MSG_LEVELS_UPDATED));
@@ -93,7 +105,21 @@ public class OrgHierarchyLevelServiceImpl implements OrgHierarchyLevelService {
 
     @Override
     public List<HierarchyLevelRecord> findLevels(String rootOrgId) {
-        return orgHierarchyLevelRepository.findLevels(rootOrgId);
+        String cacheKey = getHierarchyLevelsCacheKey(rootOrgId);
+        List<HierarchyLevelRecord> cached = redisCache.get(cacheKey, new TypeReference<List<HierarchyLevelRecord>>() {});
+        if (cached != null) {
+            return cached;
+        }
+
+        List<HierarchyLevelRecord> levels = orgHierarchyLevelRepository.findLevels(rootOrgId);
+        if (CollectionUtils.isNotEmpty(levels)) {
+            redisCache.setWithTtl(cacheKey, levels, levelsCacheTtlHours, TimeUnit.HOURS);
+        }
+        return levels;
+    }
+
+    private static String getHierarchyLevelsCacheKey(String rootOrgId) {
+        return Constants.HIERARCHY_LEVELS_CACHE_KEY_PREFIX + rootOrgId;
     }
 
     @Override
