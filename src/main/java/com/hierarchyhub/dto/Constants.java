@@ -231,6 +231,7 @@ public class Constants {
     public static final String MINISTRY_OR_STATE_ID = "ministryOrStateId";
     public static final String ORG_INDEX_ELASTICSEARCH_CLIENT_BEAN = "orgIndexElasticsearchClient";
     public static final String ORG_MASTER_DATA_CACHE_KEY_PREFIX = "org-master-data:";
+    public static final String HIERARCHY_LEVELS_CACHE_KEY_PREFIX = "org-hierarchy-levels:";
     public static final String SCROLL_ID = "_scroll_id";
     public static final String SCROLL_ID_PARAM = "scroll_id";
     public static final String HITS = "hits";

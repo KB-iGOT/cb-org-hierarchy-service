@@ -14,6 +14,7 @@ import com.hierarchyhub.repository.OrgHierarchyLevelRepository;
 import com.hierarchyhub.repository.OrgHierarchyRepository;
 import com.hierarchyhub.util.AuthUtils;
 import com.hierarchyhub.util.CassandraUtils;
+import com.hierarchyhub.util.RedisCache;
 import com.hierarchyhub.validation.OrgHierarchyValidator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,12 +26,14 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -45,11 +48,13 @@ public class OrgHierarchyLevelServiceImplTest {
     private final OrgHierarchyValidator orgHierarchyValidator = new OrgHierarchyValidator();
     private final CassandraUtils cassandraUtils = mock(CassandraUtils.class);
     private final AuthUtils authUtils = mock(AuthUtils.class);
+    private final RedisCache redisCache = mock(RedisCache.class);
     private final OrgHierarchyLevelServiceImpl service =
-            new OrgHierarchyLevelServiceImpl(orgHierarchyLevelRepository, orgHierarchyRepository, orgHierarchyValidator, cassandraUtils, authUtils);
+            new OrgHierarchyLevelServiceImpl(orgHierarchyLevelRepository, orgHierarchyRepository, orgHierarchyValidator, cassandraUtils, authUtils, redisCache);
 
     @BeforeEach
     public void setUp() {
+        ReflectionTestUtils.setField(service, "levelsCacheTtlHours", 24L);
         ReflectionTestUtils.setField(orgHierarchyValidator, "ministryOrgTypes", Collections.singletonList(16));
         ReflectionTestUtils.setField(orgHierarchyValidator, "stateOrgTypes", Collections.singletonList(2048));
         when(authUtils.validateCallerAuthenticationAndFetchUserId(anyString())).thenReturn("user-1");
@@ -173,6 +178,48 @@ public class OrgHierarchyLevelServiceImplTest {
         when(orgHierarchyLevelRepository.findLevels("root-1")).thenReturn(levels);
 
         assertEquals(levels, service.findLevels("root-1"));
+    }
+
+    @Test
+    public void findLevelsReturnsTheCachedValueAndNeverQueriesTheRepositoryOnACacheHit() {
+        List<HierarchyLevelRecord> cached = List.of(new HierarchyLevelRecord(1, "Cached", "From Redis"));
+        when(redisCache.<List<HierarchyLevelRecord>>get(eq(cacheKeyForRoot1()), any())).thenReturn(cached);
+
+        assertEquals(cached, service.findLevels("root-1"));
+
+        verify(orgHierarchyLevelRepository, never()).findLevels(anyString());
+    }
+
+    @Test
+    public void findLevelsCachesANonEmptyRepositoryResultOnACacheMiss() {
+        List<HierarchyLevelRecord> levels = List.of(new HierarchyLevelRecord(1, "L1", "LevelOne"));
+        when(orgHierarchyLevelRepository.findLevels("root-1")).thenReturn(levels);
+
+        service.findLevels("root-1");
+
+        verify(redisCache).setWithTtl(cacheKeyForRoot1(), levels, 24L, TimeUnit.HOURS);
+    }
+
+    @Test
+    public void findLevelsNeverCachesAnEmptyResult() {
+        when(orgHierarchyLevelRepository.findLevels("root-1")).thenReturn(Collections.emptyList());
+
+        service.findLevels("root-1");
+
+        verify(redisCache, never()).setWithTtl(anyString(), any(), anyLong(), any());
+    }
+
+    @Test
+    public void updateHierarchyLevelsEvictsTheCacheAfterAnUpsert() {
+        ApiRequest<UpdateHierarchyLevelsRequestBody> request = requestWith(new HierarchyLevelItem(1, "Ministry", "desc"));
+
+        service.updateHierarchyLevels("root-1", request, "token");
+
+        verify(redisCache).delete(cacheKeyForRoot1());
+    }
+
+    private static String cacheKeyForRoot1() {
+        return Constants.HIERARCHY_LEVELS_CACHE_KEY_PREFIX + "root-1";
     }
 
     @Test
